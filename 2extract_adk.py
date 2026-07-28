@@ -24,6 +24,7 @@ import tempfile
 import csv
 import io
 import base64
+import shutil
 # pyrefly: ignore [missing-import]
 import altair as alt
 
@@ -134,6 +135,35 @@ UNNECESSARY_M_ITEM = [
     'desember', 'jmltunda', 'kdluncuran', 'jmlabt', 'norev', 'kdubah', 'kurs', 'indexjm', 'kdib'
 ]
 
+def _extract_with_fallback(file_path, outdir):
+    """
+    Extract an archive, forcing the format by extension if patoolib's
+    content-based detection isn't available (e.g. no 'file'/libmagic on
+    the host, as can happen on Streamlit Cloud). ADK files are RAR
+    archives renamed with non-standard extensions (.sXX, no extension,
+    etc.), so we try a plain extract first, then retry after renaming
+    a copy with each common archive extension until one works.
+    """
+    try:
+        patoolib.extract_archive(file_path, outdir=outdir, verbosity=-1)
+        return True
+    except Exception:
+        pass
+
+    for ext in ['.rar', '.zip', '.7z', '.tar', '.tar.gz']:
+        renamed_path = file_path + ext
+        try:
+            shutil.copy(file_path, renamed_path)
+            patoolib.extract_archive(renamed_path, outdir=outdir, verbosity=-1)
+            return True
+        except Exception:
+            continue
+        finally:
+            if os.path.exists(renamed_path):
+                os.remove(renamed_path)
+    return False
+
+
 def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
     """
     Extracts a .rar ADK archive, parses CSVs with user-selected delimiter,
@@ -149,7 +179,9 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
         source_path = os.path.join(temp_dir, uploaded_file.name)
         with open(source_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        patoolib.extract_archive(source_path, outdir=outer_extraction_dir, verbosity=-1)
+        if not _extract_with_fallback(source_path, outer_extraction_dir):
+            st.error("  - Could not extract outer archive (unrecognized format).")
+            return {}
         st.info(f"  - Successfully extracted outer archive.")
 
         # Find inner .sXX file
@@ -164,7 +196,9 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
 
         # Extract inner archive
         inner_extraction_dir = tempfile.mkdtemp(dir=temp_dir)
-        patoolib.extract_archive(inner_sxx_file, outdir=inner_extraction_dir, verbosity=-1)
+        if not _extract_with_fallback(inner_sxx_file, inner_extraction_dir):
+            st.error("  - Could not extract inner `.sXX` archive (unrecognized format).")
+            return {}
         st.info(f"  - Successfully extracted inner archive.")
 
         # --- Recursively peel any further nested archives ---
@@ -189,11 +223,8 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
                 if _is_target_csv(os.path.basename(fp)):
                     continue
                 nested_out = tempfile.mkdtemp(dir=inner_extraction_dir)
-                try:
-                    patoolib.extract_archive(fp, outdir=nested_out, verbosity=-1)
+                if _extract_with_fallback(fp, nested_out):
                     extracted_something = True
-                except Exception:
-                    continue  # not an archive (or unsupported) - leave it as-is
 
             if not extracted_something:
                 break  # nothing more to peel
