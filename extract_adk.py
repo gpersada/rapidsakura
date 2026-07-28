@@ -24,6 +24,8 @@ import tempfile
 import csv
 import io
 import base64
+import shutil
+import subprocess
 # pyrefly: ignore [missing-import]
 import altair as alt
 
@@ -134,6 +136,51 @@ UNNECESSARY_M_ITEM = [
     'desember', 'jmltunda', 'kdluncuran', 'jmlabt', 'norev', 'kdubah', 'kurs', 'indexjm', 'kdib'
 ]
 
+def _extract_with_fallback(file_path, outdir):
+    """
+    Extract an archive, forcing the format by extension if patoolib's
+    content-based detection isn't available (e.g. no 'file'/libmagic on
+    the host, as can happen on Streamlit Cloud). ADK files are RAR
+    archives renamed with non-standard extensions (.sXX, no extension,
+    etc.), so we try a plain extract first, then retry after renaming
+    a copy with each common archive extension until one works.
+    Finally falls back to the 'unar' CLI tool directly, which auto-
+    detects format from content and supports RAR5 (unlike unrar-free).
+    """
+    try:
+        patoolib.extract_archive(file_path, outdir=outdir, verbosity=-1)
+        return True
+    except Exception:
+        pass
+
+    for ext in ['.rar', '.zip', '.7z', '.tar', '.tar.gz']:
+        renamed_path = file_path + ext
+        try:
+            shutil.copy(file_path, renamed_path)
+            patoolib.extract_archive(renamed_path, outdir=outdir, verbosity=-1)
+            return True
+        except Exception:
+            continue
+        finally:
+            if os.path.exists(renamed_path):
+                os.remove(renamed_path)
+
+    # Fallback: call 'unar' directly. It auto-detects the archive format
+    # from content (not extension) and supports RAR5, which unrar-free
+    # does not.
+    try:
+        result = subprocess.run(
+            ["unar", "-f", "-o", outdir, file_path],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
     """
     Extracts a .rar ADK archive, parses CSVs with user-selected delimiter,
@@ -149,7 +196,9 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
         source_path = os.path.join(temp_dir, uploaded_file.name)
         with open(source_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        patoolib.extract_archive(source_path, outdir=outer_extraction_dir, verbosity=-1)
+        if not _extract_with_fallback(source_path, outer_extraction_dir):
+            st.error("  - Could not extract outer archive (unrecognized format).")
+            return {}
         st.info(f"  - Successfully extracted outer archive.")
 
         # Find inner .sXX file
@@ -164,14 +213,52 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
 
         # Extract inner archive
         inner_extraction_dir = tempfile.mkdtemp(dir=temp_dir)
-        patoolib.extract_archive(inner_sxx_file, outdir=inner_extraction_dir, verbosity=-1)
+        if not _extract_with_fallback(inner_sxx_file, inner_extraction_dir):
+            st.error("  - Could not extract inner `.sXX` archive (unrecognized format).")
+            return {}
         st.info(f"  - Successfully extracted inner archive.")
+
+        # --- Recursively peel any further nested archives ---
+        # ADK exports sometimes wrap the actual D_*/M_* CSVs inside one more
+        # archive layer with no recognizable extension (e.g. 'd01_...').
+        def _is_target_csv(filename):
+            low = filename.lower()
+            return any(low.startswith(p) for p in TARGET_FILES.keys()) and low.endswith('.csv')
+
+        max_depth = 4
+        for depth in range(max_depth):
+            all_files = []
+            for root, _dirs, files in os.walk(inner_extraction_dir):
+                for fname in files:
+                    all_files.append(os.path.join(root, fname))
+
+            if any(_is_target_csv(os.path.basename(fp)) for fp in all_files):
+                break
+
+            extracted_something = False
+            for fp in all_files:
+                if _is_target_csv(os.path.basename(fp)):
+                    continue
+                nested_out = tempfile.mkdtemp(dir=inner_extraction_dir)
+                if _extract_with_fallback(fp, nested_out):
+                    extracted_something = True
+
+            if not extracted_something:
+                break  # nothing more to peel
+
+        # Final inventory across the whole tree (all nesting levels)
+        all_files_final = []
+        for root, _dirs, files in os.walk(inner_extraction_dir):
+            for fname in files:
+                all_files_final.append(os.path.join(root, fname))
+
+        st.caption(f"  - Files found after full extraction: {[os.path.basename(f) for f in all_files_final]}")
 
         # Process each expected data file
         for prefix in TARGET_FILES.keys():
-            for extracted_file in os.listdir(inner_extraction_dir):
-                if extracted_file.startswith(prefix) and extracted_file.endswith('.csv'):
-                    file_path = os.path.join(inner_extraction_dir, extracted_file)
+            for file_path in all_files_final:
+                extracted_file = os.path.basename(file_path)
+                if extracted_file.lower().startswith(prefix.lower()) and extracted_file.lower().endswith('.csv'):
                     if os.path.getsize(file_path) == 0:
                         st.warning(f"    - Found empty file: `{extracted_file}`. Skipping.")
                         continue
@@ -197,7 +284,7 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
                         )
 
                         # Clean caret characters AFTER parsing
-                        df = df.applymap(lambda x: str(x).replace('^', '') if isinstance(x, str) else x)
+                        df = df.apply(lambda col: col.map(lambda x: str(x).replace('^', '') if isinstance(x, str) else x))
 
                         dataframes[prefix] = df
                         st.success(f"    - Successfully loaded `{extracted_file}` with {df.shape[1]} columns.")
