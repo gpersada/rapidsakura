@@ -2,4 +2,3 @@ streamlit
 pandas
 patool
 altair
-openpyxl
