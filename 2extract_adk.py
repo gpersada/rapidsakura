@@ -136,7 +136,7 @@ UNNECESSARY_M_ITEM = [
     'desember', 'jmltunda', 'kdluncuran', 'jmlabt', 'norev', 'kdubah', 'kurs', 'indexjm', 'kdib'
 ]
 
-def _extract_with_fallback(file_path, outdir):
+def _extract_with_fallback(file_path, outdir, debug=False):
     """
     Extract an archive, forcing the format by extension if patoolib's
     content-based detection isn't available (e.g. no 'file'/libmagic on
@@ -147,11 +147,13 @@ def _extract_with_fallback(file_path, outdir):
     Finally falls back to the 'unar' CLI tool directly, which auto-
     detects format from content and supports RAR5 (unlike unrar-free).
     """
+    errors = []
+
     try:
         patoolib.extract_archive(file_path, outdir=outdir, verbosity=-1)
         return True
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"direct patoolib: {e}")
 
     for ext in ['.rar', '.zip', '.7z', '.tar', '.tar.gz']:
         renamed_path = file_path + ext
@@ -159,7 +161,8 @@ def _extract_with_fallback(file_path, outdir):
             shutil.copy(file_path, renamed_path)
             patoolib.extract_archive(renamed_path, outdir=outdir, verbosity=-1)
             return True
-        except Exception:
+        except Exception as e:
+            errors.append(f"patoolib as {ext}: {e}")
             continue
         finally:
             if os.path.exists(renamed_path):
@@ -175,8 +178,16 @@ def _extract_with_fallback(file_path, outdir):
         )
         if result.returncode == 0:
             return True
-    except Exception:
-        pass
+        errors.append(f"unar: {result.stderr.strip()}")
+    except FileNotFoundError:
+        errors.append("unar: command not found (package not installed)")
+    except Exception as e:
+        errors.append(f"unar: {e}")
+
+    if debug:
+        st.caption("    Extraction attempts failed:")
+        for err in errors:
+            st.caption(f"    - {err}")
 
     return False
 
@@ -196,7 +207,7 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
         source_path = os.path.join(temp_dir, uploaded_file.name)
         with open(source_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        if not _extract_with_fallback(source_path, outer_extraction_dir):
+        if not _extract_with_fallback(source_path, outer_extraction_dir, debug=True):
             st.error("  - Could not extract outer archive (unrecognized format).")
             return {}
         st.info(f"  - Successfully extracted outer archive.")
@@ -213,7 +224,7 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
 
         # Extract inner archive
         inner_extraction_dir = tempfile.mkdtemp(dir=temp_dir)
-        if not _extract_with_fallback(inner_sxx_file, inner_extraction_dir):
+        if not _extract_with_fallback(inner_sxx_file, inner_extraction_dir, debug=True):
             st.error("  - Could not extract inner `.sXX` archive (unrecognized format).")
             return {}
         st.info(f"  - Successfully extracted inner archive.")
