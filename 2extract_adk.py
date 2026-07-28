@@ -25,6 +25,7 @@ import csv
 import io
 import base64
 import shutil
+import subprocess
 # pyrefly: ignore [missing-import]
 import altair as alt
 
@@ -143,6 +144,8 @@ def _extract_with_fallback(file_path, outdir):
     archives renamed with non-standard extensions (.sXX, no extension,
     etc.), so we try a plain extract first, then retry after renaming
     a copy with each common archive extension until one works.
+    Finally falls back to the 'unar' CLI tool directly, which auto-
+    detects format from content and supports RAR5 (unlike unrar-free).
     """
     try:
         patoolib.extract_archive(file_path, outdir=outdir, verbosity=-1)
@@ -161,6 +164,20 @@ def _extract_with_fallback(file_path, outdir):
         finally:
             if os.path.exists(renamed_path):
                 os.remove(renamed_path)
+
+    # Fallback: call 'unar' directly. It auto-detects the archive format
+    # from content (not extension) and supports RAR5, which unrar-free
+    # does not.
+    try:
+        result = subprocess.run(
+            ["unar", "-f", "-o", outdir, file_path],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+
     return False
 
 
