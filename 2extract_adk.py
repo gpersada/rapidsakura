@@ -168,6 +168,23 @@ def _extract_with_fallback(file_path, outdir, debug=False):
             if os.path.exists(renamed_path):
                 os.remove(renamed_path)
 
+    # Fallback: try unrar directly with stdout captured (unrar often writes
+    # its real error - e.g. wrong/missing password - to stdout, not stderr,
+    # which patoolib's exception message doesn't surface).
+    try:
+        result = subprocess.run(
+            ["unrar", "x", "-kb", "-or", "-p-", file_path, outdir + os.sep],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            return True
+        errors.append(f"unrar direct (stdout): {result.stdout.strip()}")
+        errors.append(f"unrar direct (stderr): {result.stderr.strip()}")
+    except FileNotFoundError:
+        errors.append("unrar: command not found")
+    except Exception as e:
+        errors.append(f"unrar direct: {e}")
+
     # Fallback: call 'unar' directly. It auto-detects the archive format
     # from content (not extension) and supports RAR5, which unrar-free
     # does not.
@@ -178,7 +195,8 @@ def _extract_with_fallback(file_path, outdir, debug=False):
         )
         if result.returncode == 0:
             return True
-        errors.append(f"unar: {result.stderr.strip()}")
+        errors.append(f"unar (stdout): {result.stdout.strip()}")
+        errors.append(f"unar (stderr): {result.stderr.strip()}")
     except FileNotFoundError:
         errors.append("unar: command not found (package not installed)")
     except Exception as e:
