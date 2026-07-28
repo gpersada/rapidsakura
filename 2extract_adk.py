@@ -174,7 +174,7 @@ def _extract_with_fallback(file_path, outdir, debug=False):
     try:
         result = subprocess.run(
             ["unrar", "x", "-kb", "-or", "-p-", file_path, outdir + os.sep],
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=120, encoding='utf-8', errors='replace'
         )
         if result.returncode == 0:
             return True
@@ -187,13 +187,26 @@ def _extract_with_fallback(file_path, outdir, debug=False):
 
     # Fallback: call 'unar' directly. It auto-detects the archive format
     # from content (not extension) and supports RAR5, which unrar-free
-    # does not.
+    # does not. Treat as success even on partial failure (nonzero exit)
+    # if at least some files were actually extracted - a few corrupted
+    # entries inside the archive shouldn't discard everything else.
     try:
         result = subprocess.run(
             ["unar", "-f", "-o", outdir, file_path],
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=120, encoding='utf-8', errors='replace'
+        )
+        extracted_any = any(
+            os.path.getsize(os.path.join(root, f)) > 0
+            for root, _dirs, files in os.walk(outdir)
+            for f in files
         )
         if result.returncode == 0:
+            return True
+        if extracted_any:
+            errors.append(f"unar: partial extraction (some entries corrupted in source archive): {result.stdout.strip()[-500:]}")
+            if debug:
+                st.caption("    - unar: partial extraction succeeded (some entries were corrupted in the source archive and skipped):")
+                st.caption(f"      {result.stdout.strip()[-500:]}")
             return True
         errors.append(f"unar (stdout): {result.stdout.strip()}")
         errors.append(f"unar (stderr): {result.stderr.strip()}")
