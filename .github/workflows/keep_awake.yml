@@ -1,0 +1,16 @@
+name: Keep Streamlit Awake
+
+on:
+  schedule:
+    # Runs at 01:00 UTC every day or 8.00 am (UTC +7)
+    - cron: '0 1 * * *'
+  # Allows you to run this manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: curl -s https://rapidsakura.streamlit.app > /dev/null
+
