@@ -630,8 +630,8 @@ with tab_dashboard:
             with row2_c2:
                 sel_dirbag = 'All'
                 if k_sat == '527010' and 'kddirbag' in main_df.columns:
-                base_527010 = main_df[main_df['kdsatker'] == '527010']
-                mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+                    base_527010 = main_df[main_df['kdsatker'] == '527010']
+                    mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
 
                     if 'nmdirbag' in base_527010.columns:
                     dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
