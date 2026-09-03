@@ -827,18 +827,17 @@ with tab_dashboard:
                     if col not in prog_pivot.columns:
                         prog_pivot[col] = 0
                 prog_pivot['perubahan'] = prog_pivot['menjadi'] - prog_pivot['semula']
-                prog_display = prog_pivot.rename(columns={
-                    'kdprogram': 'Kode Program',
-                    'semula': 'Pagu Semula',
-                    'menjadi': 'Pagu Menjadi',
-                    'perubahan': 'Perubahan',
-                })
-                st.dataframe(
-                    prog_display.style.format(
-                        {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
-                    ).pipe(apply_stripes),
-                    use_container_width=True
-                )
+                prog_pivot = prog_pivot.sort_values('kdprogram')
+
+                prog_cols = st.columns(len(prog_pivot)) if len(prog_pivot) > 0 else []
+                for col, (_, prow) in zip(prog_cols, prog_pivot.iterrows()):
+                    with col:
+                        st.metric(
+                            f"Pagu Program {prow['kdprogram']}",
+                            _fmt_id(prow['menjadi']),
+                            delta=_fmt_delta(prow['perubahan'])
+                        )
+                        st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
             else:
                 st.error("Missing kdprogram column.")
                 
