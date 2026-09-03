@@ -1238,4 +1238,4 @@ st.markdown(f"""
         <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">
         CC BY-NC-SA 4.0 International</a>
     </div>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)        
