@@ -537,6 +537,8 @@ def build_joined_dataset(item_df, akun_df, skmpnen_df, soutput_df, ref_satker, r
             main_df.insert(0, 'source', source_label)
             
     return main_df
+
+
 def assign_new_cols(df):
     """Adds 'ops/nonops' (from kdkmpnen) and 'satdirbag' (from urskmpnen /
     nmsatker) columns. Shared by the BI Dashboard and Reporting & Matriks
@@ -546,10 +548,10 @@ def assign_new_cols(df):
     else:
         df['ops/nonops'] = 'Nonoperasional'
 
-def get_satdirbag(row):
-    urs = str(row.get('urskmpnen', '')).strip().upper()
-    nmsatker = row.get('nmsatker', '')
-    if urs.startswith('PB.'):
+    def get_satdirbag(row):
+        urs = str(row.get('urskmpnen', '')).strip().upper()
+        nmsatker = row.get('nmsatker', '')
+        if urs.startswith('PB.'):
             prefix = urs[:5]
             mapping = {
                 'PB.11': 'PB.11 Bagian Organisasi dan Tata Laksana',
@@ -571,10 +573,11 @@ def get_satdirbag(row):
             # flag it explicitly rather than silently falling back to the
             # satker name (which looks like a legitimate value).
             return mapping.get(prefix, f"{nmsatker} (Belum Tertandai - {prefix})")
-    return f"{nmsatker} (Belum Tertandai)"
+        return f"{nmsatker} (Belum Tertandai)"
 
     df['satdirbag'] = df.apply(get_satdirbag, axis=1)
     return df
+
 
 with tab_dashboard:
     st.header("Alokasi Ditjen Perbendaharaan")
@@ -627,29 +630,29 @@ with tab_dashboard:
             else:
                 skmp_list = ['All']
             sel_skmpnen = st.selectbox("Subkomponen", skmp_list)
-            with row2_c2:
-                sel_dirbag = 'All'
-                if k_sat == '527010' and 'kddirbag' in main_df.columns:
-                    base_527010 = main_df[main_df['kdsatker'] == '527010']
-                    mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+            
+        with row2_c2:
+            sel_dirbag = 'All'
+            if k_sat == '527010' and 'kddirbag' in main_df.columns:
+                base_527010 = main_df[main_df['kdsatker'] == '527010']
+                mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
 
-                    if 'nmdirbag' in base_527010.columns:
-                        dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
-                        dirbag_pairs['nmdirbag'] = dirbag_pairs['nmdirbag'].fillna("N/A")
-                        opts_dirbag = sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
-                    else:
-                        opts_dirbag = sorted(base_527010[mask_tagged]['kddirbag'].dropna().unique().tolist())
+                if 'nmdirbag' in base_527010.columns:
+                    dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
+                    dirbag_pairs['nmdirbag'] = dirbag_pairs['nmdirbag'].fillna("N/A")
+                    opts_dirbag = sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
+                else:
+                    opts_dirbag = sorted(base_527010[mask_tagged]['kddirbag'].dropna().unique().tolist())
 
-                    # Explicit bucket for rows that don't map to any known
-                    # PB.xx code, so they're selectable/inspectable instead of
-                    # silently vanishing from the filter while still showing
-                    # up (as "Belum Tertandai") in the summary table below.
-                    opts_dirbag = ['All'] + opts_dirbag
-                    if (~mask_tagged).any():
-                        opts_dirbag.append('UNTAGGED - Belum Tertandai')
+                # Explicit bucket for rows that don't map to any known
+                # PB.xx code, so they're selectable/inspectable instead of
+                # silently vanishing from the filter while still showing
+                # up (as "Belum Tertandai") in the summary table below.
+                opts_dirbag = ['All'] + opts_dirbag
+                if (~mask_tagged).any():
+                    opts_dirbag.append('UNTAGGED - Belum Tertandai')
 
-                    sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)    
-    
+                sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)
                 
         with row2_c3:
             if all(c in main_df.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput']):
@@ -673,7 +676,6 @@ with tab_dashboard:
             else:
                 k_dir = sel_dirbag.split(" - ")[0]
                 f_df = f_df[f_df['kddirbag'] == k_dir]
-        
         if sel_ro != 'All':
             k_ro_parts = sel_ro.split(" - ")[0].split(".")
             if len(k_ro_parts) == 4:
@@ -683,7 +685,7 @@ with tab_dashboard:
                             (f_df['kdoutput'] == k_out) & 
                             (f_df['kdsoutput'] == k_sout)]
 
-                # Ensure amounts are properly aggregated
+        # Ensure amounts are properly aggregated
         if 'jumlah' in f_df.columns:
             f_df['jumlah'] = pd.to_numeric(f_df['jumlah'], errors='coerce').fillna(0)
 
