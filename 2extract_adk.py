@@ -546,9 +546,9 @@ def assign_new_cols(df):
     else:
         df['ops/nonops'] = 'Nonoperasional'
 
-    def get_satdirbag(row):
-        urs = str(row.get('urskmpnen', ''))
-        nmsatker = row.get('nmsatker', '')
+def get_satdirbag(row):
+    urs = str(row.get('urskmpnen', '')).strip().upper()
+    nmsatker = row.get('nmsatker', '')
         if urs.startswith('PB.'):
             prefix = urs[:5]
             mapping = {
@@ -567,8 +567,11 @@ def assign_new_cols(df):
                 'PB.80': 'PB.80 Direktorat Sistem Informasi dan Teknologi Perbendaharaan',
                 'PB.TP': 'PB.TP Tenaga Pengkaji Bidang Perbendaharaan'
             }
-            return mapping.get(prefix, nmsatker)
-        return nmsatker
+            # If it starts with PB. but doesn't match a known code, still
+            # flag it explicitly rather than silently falling back to the
+            # satker name (which looks like a legitimate value).
+            return mapping.get(prefix, f"{nmsatker} (Belum Tertandai - {prefix})")
+        return f"{nmsatker} (Belum Tertandai)"
 
     df['satdirbag'] = df.apply(get_satdirbag, axis=1)
     return df
@@ -624,18 +627,29 @@ with tab_dashboard:
             else:
                 skmp_list = ['All']
             sel_skmpnen = st.selectbox("Subkomponen", skmp_list)
-            
-        with row2_c2:
+                with row2_c2:
             sel_dirbag = 'All'
             if k_sat == '527010' and 'kddirbag' in main_df.columns:
-                mask = (main_df['kdsatker'] == '527010') & (main_df['kddirbag'].astype(str).str.startswith('PB.'))
-                if 'nmdirbag' in main_df.columns:
-                    dirbag_pairs = main_df[mask][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
+                base_527010 = main_df[main_df['kdsatker'] == '527010']
+                mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+
+                if 'nmdirbag' in base_527010.columns:
+                    dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
                     dirbag_pairs['nmdirbag'] = dirbag_pairs['nmdirbag'].fillna("N/A")
-                    opts_dirbag = ['All'] + sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
+                    opts_dirbag = sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
                 else:
-                    opts_dirbag = ['All'] + sorted(main_df[mask]['kddirbag'].dropna().unique().tolist())
-                sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)
+                    opts_dirbag = sorted(base_527010[mask_tagged]['kddirbag'].dropna().unique().tolist())
+
+                # Explicit bucket for rows that don't map to any known
+                # PB.xx code, so they're selectable/inspectable instead of
+                # silently vanishing from the filter while still showing
+                # up (as "Belum Tertandai") in the summary table below.
+                opts_dirbag = ['All'] + opts_dirbag
+                if (~mask_tagged).any():
+                    opts_dirbag.append('UNTAGGED - Belum Tertandai')
+
+                sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)    
+    
                 
         with row2_c3:
             if all(c in main_df.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput']):
@@ -654,8 +668,12 @@ with tab_dashboard:
             k_val = sel_skmpnen.split(" - ")[0]
             f_df = f_df[f_df['kdskmpnen'] == k_val]
         if sel_dirbag != 'All':
-            k_dir = sel_dirbag.split(" - ")[0]
-            f_df = f_df[f_df['kddirbag'] == k_dir]
+            if sel_dirbag.startswith('UNTAGGED'):
+                f_df = f_df[~f_df['kddirbag'].astype(str).str.upper().str.startswith('PB.')]
+            else:
+                k_dir = sel_dirbag.split(" - ")[0]
+                f_df = f_df[f_df['kddirbag'] == k_dir]
+        
         if sel_ro != 'All':
             k_ro_parts = sel_ro.split(" - ")[0].split(".")
             if len(k_ro_parts) == 4:
@@ -686,8 +704,11 @@ with tab_dashboard:
                 k_val = sel_skmpnen.split(" - ")[0]
                 d = d[d['kdskmpnen'] == k_val]
             if sel_dirbag != 'All' and 'kddirbag' in d.columns:
-                k_dir = sel_dirbag.split(" - ")[0]
-                d = d[d['kddirbag'] == k_dir]
+                if sel_dirbag.startswith('UNTAGGED'):
+                    d = d[~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')]
+                else:
+                    k_dir = sel_dirbag.split(" - ")[0]
+                    d = d[d['kddirbag'] == k_dir]
             if sel_ro != 'All':
                 k_ro_parts = sel_ro.split(" - ")[0].split(".")
                 if len(k_ro_parts) == 4 and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
