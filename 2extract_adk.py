@@ -627,7 +627,7 @@ with tab_dashboard:
             else:
                 skmp_list = ['All']
             sel_skmpnen = st.selectbox("Subkomponen", skmp_list)
-                with row2_c2:
+            with row2_c2:
             sel_dirbag = 'All'
             if k_sat == '527010' and 'kddirbag' in main_df.columns:
                 base_527010 = main_df[main_df['kdsatker'] == '527010']
