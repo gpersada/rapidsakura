@@ -598,11 +598,6 @@ with tab_dashboard:
         semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
         semula_dash_df = assign_new_cols(semula_dash_df)
 
-        # Combined dataset (both sources) - used as the base for the
-        # Source filter below, so metrics/charts can reflect Menjadi,
-        # Semula, or both.
-        combined_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
-
 
         # --- Filters ---
         st.subheader("Filter Data")
@@ -669,13 +664,11 @@ with tab_dashboard:
 
         row3_c1, row3_c2, row3_c3 = st.columns(3)
         with row3_c1:
-            sel_source = st.selectbox("Sumber Data (Semula/Menjadi)", ['Menjadi', 'Semula', 'All'], index=0)
-        with row3_c2:
             opts_akun = ['All'] + sorted(main_df['kdakun'].dropna().unique().tolist()) if 'kdakun' in main_df.columns else ['All']
             sel_akun = st.selectbox("Kode Akun (kdakun)", opts_akun)
 
         # Apply filters
-        f_df = combined_df.copy() if sel_source == 'All' else combined_df[combined_df['source'] == sel_source.lower()].copy()
+        f_df = main_df.copy()
         if sel_akun != 'All' and 'kdakun' in f_df.columns: f_df = f_df[f_df['kdakun'] == sel_akun]
         if sel_thang != 'All': f_df = f_df[f_df['thang'] == sel_thang]
         if sel_beban != 'All': f_df = f_df[f_df['kdbeban'] == sel_beban]
@@ -821,6 +814,33 @@ with tab_dashboard:
             with m3:
                 st.metric("Pagu Belanja Nonoperasional", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_non_op_semula)}")
+
+            st.markdown("**Pagu per Program**")
+            if all(c in compare_df.columns for c in ['kdprogram', 'source', 'jumlah']):
+                prog_pivot = (
+                    compare_df.groupby(['kdprogram', 'source'])['jumlah']
+                    .sum()
+                    .unstack('source', fill_value=0)
+                    .reset_index()
+                )
+                for col in ['semula', 'menjadi']:
+                    if col not in prog_pivot.columns:
+                        prog_pivot[col] = 0
+                prog_pivot['perubahan'] = prog_pivot['menjadi'] - prog_pivot['semula']
+                prog_display = prog_pivot.rename(columns={
+                    'kdprogram': 'Kode Program',
+                    'semula': 'Pagu Semula',
+                    'menjadi': 'Pagu Menjadi',
+                    'perubahan': 'Perubahan',
+                })
+                st.dataframe(
+                    prog_display.style.format(
+                        {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
+                    ).pipe(apply_stripes),
+                    use_container_width=True
+                )
+            else:
+                st.error("Missing kdprogram column.")
                 
         st.write("---")
         
@@ -828,50 +848,52 @@ with tab_dashboard:
         if f_df.empty:
             st.warning("No data based on the current filters.")
         else:
+            st.markdown("**Pagu per Rincian Output**")
+            ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'source', 'jumlah']
+            if all(c in compare_df.columns for c in ro_cols):
+                ro_pivot = (
+                    compare_df.groupby(['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'source'])['jumlah']
+                    .sum()
+                    .unstack('source', fill_value=0)
+                    .reset_index()
+                )
+                for col in ['semula', 'menjadi']:
+                    if col not in ro_pivot.columns:
+                        ro_pivot[col] = 0
+                ro_pivot['Full RO'] = (
+                    ro_pivot['kdprogram'].astype(str) + '.' +
+                    ro_pivot['kdgiat'].astype(str) + '.' +
+                    ro_pivot['kdoutput'].astype(str) + '.' +
+                    ro_pivot['kdsoutput'].astype(str)
+                )
+                ro_pivot['perubahan'] = ro_pivot['menjadi'] - ro_pivot['semula']
+                out_df = ro_pivot[['Full RO', 'ursoutput', 'semula', 'menjadi', 'perubahan']].rename(columns={
+                    'ursoutput': 'Uraian Rincian Output',
+                    'semula': 'Pagu Semula',
+                    'menjadi': 'Pagu Menjadi',
+                    'perubahan': 'Perubahan',
+                })
+                st.dataframe(
+                    out_df.style.format(
+                        {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
+                    ).pipe(apply_stripes),
+                    column_config={
+                        "Full RO": st.column_config.Column(width="small"),
+                        "Uraian Rincian Output": st.column_config.Column(width="large"),
+                        "Pagu Semula": st.column_config.Column(width="small"),
+                        "Pagu Menjadi": st.column_config.Column(width="small"),
+                        "Perubahan": st.column_config.Column(width="small"),
+                    },
+                    use_container_width=True
+                    )
+            else:
+                st.error("Missing columns for Rincian Output.")
+
+            st.write("---")
+
             c1, c2 = st.columns(2)
-            
+
             with c1:
-                st.markdown("**Pagu per Rincian Output**")
-                ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'source', 'jumlah']
-                if all(c in compare_df.columns for c in ro_cols):
-                    ro_pivot = (
-                        compare_df.groupby(['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'source'])['jumlah']
-                        .sum()
-                        .unstack('source', fill_value=0)
-                        .reset_index()
-                    )
-                    for col in ['semula', 'menjadi']:
-                        if col not in ro_pivot.columns:
-                            ro_pivot[col] = 0
-                    ro_pivot['Full RO'] = (
-                        ro_pivot['kdprogram'].astype(str) + '.' +
-                        ro_pivot['kdgiat'].astype(str) + '.' +
-                        ro_pivot['kdoutput'].astype(str) + '.' +
-                        ro_pivot['kdsoutput'].astype(str)
-                    )
-                    ro_pivot['perubahan'] = ro_pivot['menjadi'] - ro_pivot['semula']
-                    out_df = ro_pivot[['Full RO', 'ursoutput', 'semula', 'menjadi', 'perubahan']].rename(columns={
-                        'ursoutput': 'Uraian Rincian Output',
-                        'semula': 'Pagu Semula',
-                        'menjadi': 'Pagu Menjadi',
-                        'perubahan': 'Perubahan',
-                    })
-                    st.dataframe(
-                        out_df.style.format(
-                            {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
-                        ).pipe(apply_stripes),
-                        column_config={
-                            "Full RO": st.column_config.Column(width="small"),
-                            "Uraian Rincian Output": st.column_config.Column(width="large"),
-                            "Pagu Semula": st.column_config.Column(width="small"),
-                            "Pagu Menjadi": st.column_config.Column(width="small"),
-                            "Perubahan": st.column_config.Column(width="small"),
-                        }
-                        # use_container_width=True
-                        )
-                else:
-                    st.error("Missing columns for Rincian Output.")
-                    
                 st.markdown("**Pagu per BKPK**")
                 if 'kdakun' in f_df.columns:
                     f_df['BKPK'] = f_df['kdakun'].astype(str).str[:4]
@@ -889,16 +911,6 @@ with tab_dashboard:
                     st.error("Missing kdakun column.")
 
             with c2:
-                st.markdown("**Pagu per Kode Kegiatan**")
-                if 'kdgiat' in f_df.columns:
-                    giat_df = f_df.groupby('kdgiat')['jumlah'].sum().reset_index()
-                    st.dataframe(
-                        giat_df.style.format(thousands=".", precision=0).pipe(apply_stripes), 
-                        use_container_width=True
-                        )
-                else:
-                    st.error("Missing kdgiat column.")
-                    
                 st.markdown("**Pagu per Komponen**")
                 if 'kdkmpnen' in f_df.columns:
                     kmp_df = f_df.groupby('kdkmpnen')['jumlah'].sum().reset_index()
@@ -1238,4 +1250,4 @@ st.markdown(f"""
         <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">
         CC BY-NC-SA 4.0 International</a>
     </div>
-""", unsafe_allow_html=True)        
+""", unsafe_allow_html=True)
