@@ -634,11 +634,11 @@ with tab_dashboard:
                     mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
 
                     if 'nmdirbag' in base_527010.columns:
-                    dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
-                    dirbag_pairs['nmdirbag'] = dirbag_pairs['nmdirbag'].fillna("N/A")
-                    opts_dirbag = sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
+                        dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
+                        dirbag_pairs['nmdirbag'] = dirbag_pairs['nmdirbag'].fillna("N/A")
+                        opts_dirbag = sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
                     else:
-                    opts_dirbag = sorted(base_527010[mask_tagged]['kddirbag'].dropna().unique().tolist())
+                        opts_dirbag = sorted(base_527010[mask_tagged]['kddirbag'].dropna().unique().tolist())
 
                     # Explicit bucket for rows that don't map to any known
                     # PB.xx code, so they're selectable/inspectable instead of
