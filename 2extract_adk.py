@@ -628,27 +628,27 @@ with tab_dashboard:
                 skmp_list = ['All']
             sel_skmpnen = st.selectbox("Subkomponen", skmp_list)
             with row2_c2:
-            sel_dirbag = 'All'
-            if k_sat == '527010' and 'kddirbag' in main_df.columns:
+                sel_dirbag = 'All'
+                if k_sat == '527010' and 'kddirbag' in main_df.columns:
                 base_527010 = main_df[main_df['kdsatker'] == '527010']
                 mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
 
-                if 'nmdirbag' in base_527010.columns:
+                    if 'nmdirbag' in base_527010.columns:
                     dirbag_pairs = base_527010[mask_tagged][['kddirbag', 'nmdirbag']].dropna(subset=['kddirbag']).drop_duplicates()
                     dirbag_pairs['nmdirbag'] = dirbag_pairs['nmdirbag'].fillna("N/A")
                     opts_dirbag = sorted([f"{row['kddirbag']} - {row['nmdirbag']}" for idx, row in dirbag_pairs.iterrows()])
-                else:
+                    else:
                     opts_dirbag = sorted(base_527010[mask_tagged]['kddirbag'].dropna().unique().tolist())
 
-                # Explicit bucket for rows that don't map to any known
-                # PB.xx code, so they're selectable/inspectable instead of
-                # silently vanishing from the filter while still showing
-                # up (as "Belum Tertandai") in the summary table below.
-                opts_dirbag = ['All'] + opts_dirbag
-                if (~mask_tagged).any():
-                    opts_dirbag.append('UNTAGGED - Belum Tertandai')
+                    # Explicit bucket for rows that don't map to any known
+                    # PB.xx code, so they're selectable/inspectable instead of
+                    # silently vanishing from the filter while still showing
+                    # up (as "Belum Tertandai") in the summary table below.
+                    opts_dirbag = ['All'] + opts_dirbag
+                    if (~mask_tagged).any():
+                        opts_dirbag.append('UNTAGGED - Belum Tertandai')
 
-                sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)    
+                    sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)    
     
                 
         with row2_c3:
