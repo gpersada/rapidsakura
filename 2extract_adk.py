@@ -537,7 +537,41 @@ def build_joined_dataset(item_df, akun_df, skmpnen_df, soutput_df, ref_satker, r
             main_df.insert(0, 'source', source_label)
             
     return main_df
+def assign_new_cols(df):
+    """Adds 'ops/nonops' (from kdkmpnen) and 'satdirbag' (from urskmpnen /
+    nmsatker) columns. Shared by the BI Dashboard and Reporting & Matriks
+    tabs so both use the same categorization logic."""
+    if 'kdkmpnen' in df.columns:
+        df['ops/nonops'] = df['kdkmpnen'].apply(lambda x: 'Operasional' if str(x).strip() in ['001', '002'] else 'Nonoperasional')
+    else:
+        df['ops/nonops'] = 'Nonoperasional'
 
+    def get_satdirbag(row):
+        urs = str(row.get('urskmpnen', ''))
+        nmsatker = row.get('nmsatker', '')
+        if urs.startswith('PB.'):
+            prefix = urs[:5]
+            mapping = {
+                'PB.11': 'PB.11 Bagian Organisasi dan Tata Laksana',
+                'PB.12': 'PB.12 Bagian Sumber Daya Manusia',
+                'PB.13': 'PB.13 Bagian Keuangan',
+                'PB.14': 'PB.14 Bagian Umum',
+                'PB.15': 'PB.15 Bagian Kepatuhan Internal',
+                'PB.16': 'PB.16 Bagian Komunikasi, Layanan Informasi, dan Kerja Sama Kelembagaan',
+                'PB.20': 'PB.20 Direktorat Pelaksanaan Anggaran',
+                'PB.30': 'PB.30 Direktorat Pengelolaan Kas Negara',
+                'PB.40': 'PB.40 Direktorat Sistem Manajemen Investasi',
+                'PB.50': 'PB.50 Direktorat Pembinaan Pengelolaan Keuangan Badan Layanan Umum',
+                'PB.60': 'PB.60 Direktorat Akuntansi dan Pelaporan Keuangan',
+                'PB.70': 'PB.70 Direktorat Sistem Perbendaharaan',
+                'PB.80': 'PB.80 Direktorat Sistem Informasi dan Teknologi Perbendaharaan',
+                'PB.TP': 'PB.TP Tenaga Pengkaji Bidang Perbendaharaan'
+            }
+            return mapping.get(prefix, nmsatker)
+        return nmsatker
+
+    df['satdirbag'] = df.apply(get_satdirbag, axis=1)
+    return df
 
 with tab_dashboard:
     st.header("Alokasi Ditjen Perbendaharaan")
@@ -550,7 +584,13 @@ with tab_dashboard:
     else:
         d_item, d_akun, d_skmpnen, d_soutput, d_cttakun, m_item, m_akun, m_skmpnen, m_soutput = adk_data['d_item'], adk_data['d_akun'], adk_data['d_skmpnen'], adk_data['d_soutput'], adk_data['d_cttakun'], adk_data['m_item'], adk_data['m_akun'], adk_data['m_skmpnen'], adk_data['m_soutput']
         
-        main_df = build_joined_dataset(d_item, d_akun, d_skmpnen, d_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=d_cttakun)
+        main_df = build_joined_dataset(d_item, d_akun, d_skmpnen, d_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=d_cttakun, source_label="menjadi")
+        main_df = assign_new_cols(main_df)
+
+        # Semula (pre-revision) dataset, built for the Semula/Menjadi
+        # comparison table shown below the filters.
+        semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
+        semula_dash_df = assign_new_cols(semula_dash_df)
 
 
         # --- Filters ---
@@ -625,9 +665,80 @@ with tab_dashboard:
                             (f_df['kdoutput'] == k_out) & 
                             (f_df['kdsoutput'] == k_sout)]
 
-        # Ensure amounts are properly aggregated
+                # Ensure amounts are properly aggregated
         if 'jumlah' in f_df.columns:
             f_df['jumlah'] = pd.to_numeric(f_df['jumlah'], errors='coerce').fillna(0)
+
+        st.write("---")
+
+        # --- Ringkasan Pagu Semula vs Menjadi per Satker ---
+        st.subheader("Ringkasan Pagu Semula vs Menjadi per Satker")
+
+        def _apply_dashboard_filters(df):
+            d = df.copy()
+            if sel_thang != 'All' and 'thang' in d.columns:
+                d = d[d['thang'] == sel_thang]
+            if sel_beban != 'All' and 'kdbeban' in d.columns:
+                d = d[d['kdbeban'] == sel_beban]
+            if k_sat != '' and 'kdsatker' in d.columns:
+                d = d[d['kdsatker'] == k_sat]
+            if sel_skmpnen != 'All' and 'kdskmpnen' in d.columns:
+                k_val = sel_skmpnen.split(" - ")[0]
+                d = d[d['kdskmpnen'] == k_val]
+            if sel_dirbag != 'All' and 'kddirbag' in d.columns:
+                k_dir = sel_dirbag.split(" - ")[0]
+                d = d[d['kddirbag'] == k_dir]
+            if sel_ro != 'All':
+                k_ro_parts = sel_ro.split(" - ")[0].split(".")
+                if len(k_ro_parts) == 4 and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
+                    k_prog, k_giat, k_out, k_sout = k_ro_parts
+                    d = d[(d['kdprogram'] == k_prog) &
+                          (d['kdgiat'] == k_giat) &
+                          (d['kdoutput'] == k_out) &
+                          (d['kdsoutput'] == k_sout)]
+            return d
+
+        compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
+        compare_df = _apply_dashboard_filters(compare_df)
+        if 'jumlah' in compare_df.columns:
+            compare_df['jumlah'] = pd.to_numeric(compare_df['jumlah'], errors='coerce').fillna(0)
+
+        group_cols = ['kdsatker', 'nmsatker']
+        show_dirbag = (k_sat == '527010')
+        if show_dirbag and 'satdirbag' in compare_df.columns:
+            group_cols.append('satdirbag')
+
+        if compare_df.empty or 'jumlah' not in compare_df.columns or not all(c in compare_df.columns for c in group_cols):
+            st.info("No data based on the current filters.")
+        else:
+            pivot = (
+                compare_df.groupby(group_cols + ['source'])['jumlah']
+                .sum()
+                .unstack('source', fill_value=0)
+                .reset_index()
+            )
+            for col in ['semula', 'menjadi']:
+                if col not in pivot.columns:
+                    pivot[col] = 0
+            pivot['perubahan'] = pivot['menjadi'] - pivot['semula']
+
+            rename_map = {
+                'kdsatker': 'Kode Satker',
+                'nmsatker': 'Nama Satker',
+                'satdirbag': 'Satker/Direktorat/Bagian',
+                'semula': 'Pagu Semula',
+                'menjadi': 'Pagu Menjadi',
+                'perubahan': 'Perubahan',
+            }
+            display_cols = group_cols + ['semula', 'menjadi', 'perubahan']
+            pivot = pivot[display_cols].rename(columns=rename_map)
+
+            st.dataframe(
+                pivot.style.format(
+                    {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
+                ).pipe(apply_stripes),
+                use_container_width=True
+            )
 
         st.write("---")
         
@@ -832,39 +943,6 @@ with tab_reporting:
         menjadi_df = build_joined_dataset(d_item, d_akun, d_skmpnen, d_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=d_cttakun, source_label="menjadi")
         semula_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
 
-        def assign_new_cols(df):
-            if 'kdkmpnen' in df.columns:
-                df['ops/nonops'] = df['kdkmpnen'].apply(lambda x: 'Operasional' if str(x).strip() in ['001', '002'] else 'Nonoperasional')
-            else:
-                df['ops/nonops'] = 'Nonoperasional'
-                
-            def get_satdirbag(row):
-                urs = str(row.get('urskmpnen', ''))
-                nmsatker = row.get('nmsatker', '')
-                if urs.startswith('PB.'):
-                    prefix = urs[:5]
-                    mapping = {
-                        'PB.11': 'PB.11 Bagian Organisasi dan Tata Laksana',
-                        'PB.12': 'PB.12 Bagian Sumber Daya Manusia',
-                        'PB.13': 'PB.13 Bagian Keuangan',
-                        'PB.14': 'PB.14 Bagian Umum',
-                        'PB.15': 'PB.15 Bagian Kepatuhan Internal',
-                        'PB.16': 'PB.16 Bagian Komunikasi, Layanan Informasi, dan Kerja Sama Kelembagaan',
-                        'PB.20': 'PB.20 Direktorat Pelaksanaan Anggaran',
-                        'PB.30': 'PB.30 Direktorat Pengelolaan Kas Negara',
-                        'PB.40': 'PB.40 Direktorat Sistem Manajemen Investasi',
-                        'PB.50': 'PB.50 Direktorat Pembinaan Pengelolaan Keuangan Badan Layanan Umum',
-                        'PB.60': 'PB.60 Direktorat Akuntansi dan Pelaporan Keuangan',
-                        'PB.70': 'PB.70 Direktorat Sistem Perbendaharaan',
-                        'PB.80': 'PB.80 Direktorat Sistem Informasi dan Teknologi Perbendaharaan',
-                        'PB.TP': 'PB.TP Tenaga Pengkaji Bidang Perbendaharaan'
-                    }
-                    return mapping.get(prefix, nmsatker)
-                return nmsatker
-                
-            df['satdirbag'] = df.apply(get_satdirbag, axis=1)
-            return df
-            
         menjadi_df = assign_new_cols(menjadi_df)
         semula_df = assign_new_cols(semula_df)
 
