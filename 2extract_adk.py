@@ -598,6 +598,11 @@ with tab_dashboard:
         semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
         semula_dash_df = assign_new_cols(semula_dash_df)
 
+        # Combined dataset (both sources) - used as the base for the
+        # Source filter below, so metrics/charts can reflect Menjadi,
+        # Semula, or both.
+        combined_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
+
 
         # --- Filters ---
         st.subheader("Filter Data")
@@ -661,9 +666,13 @@ with tab_dashboard:
             else:
                 ro_list = ['All']
             sel_ro = st.selectbox("Rincian Output", ro_list)
-            
+
+        row3_c1, row3_c2, row3_c3 = st.columns(3)
+        with row3_c1:
+            sel_source = st.selectbox("Sumber Data (Semula/Menjadi)", ['Menjadi', 'Semula', 'All'], index=0)
+
         # Apply filters
-        f_df = main_df.copy()
+        f_df = combined_df.copy() if sel_source == 'All' else combined_df[combined_df['source'] == sel_source.lower()].copy()
         if sel_thang != 'All': f_df = f_df[f_df['thang'] == sel_thang]
         if sel_beban != 'All': f_df = f_df[f_df['kdbeban'] == sel_beban]
         if k_sat != '': f_df = f_df[f_df['kdsatker'] == k_sat]
