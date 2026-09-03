@@ -549,7 +549,7 @@ def assign_new_cols(df):
 def get_satdirbag(row):
     urs = str(row.get('urskmpnen', '')).strip().upper()
     nmsatker = row.get('nmsatker', '')
-        if urs.startswith('PB.'):
+    if urs.startswith('PB.'):
             prefix = urs[:5]
             mapping = {
                 'PB.11': 'PB.11 Bagian Organisasi dan Tata Laksana',
@@ -571,7 +571,7 @@ def get_satdirbag(row):
             # flag it explicitly rather than silently falling back to the
             # satker name (which looks like a legitimate value).
             return mapping.get(prefix, f"{nmsatker} (Belum Tertandai - {prefix})")
-        return f"{nmsatker} (Belum Tertandai)"
+    return f"{nmsatker} (Belum Tertandai)"
 
     df['satdirbag'] = df.apply(get_satdirbag, axis=1)
     return df
