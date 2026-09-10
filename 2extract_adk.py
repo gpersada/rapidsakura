@@ -603,37 +603,38 @@ with tab_dashboard:
         st.subheader("Filter Data")
         row1_c1, row1_c2, row1_c3 = st.columns(3)
         with row1_c1:
-            opts_thang = ['All'] + sorted(main_df['thang'].dropna().unique().tolist()) if 'thang' in main_df.columns else ['All']
-            sel_thang = st.selectbox("Tahun (thang)", opts_thang)
+            opts_thang = sorted(main_df['thang'].dropna().unique().tolist()) if 'thang' in main_df.columns else []
+            sel_thang = st.multiselect("Tahun (thang)", opts_thang)
         with row1_c2:
-            opts_beban = ['All'] + sorted(main_df['kdbeban'].dropna().unique().tolist()) if 'kdbeban' in main_df.columns else ['All']
-            sel_beban = st.selectbox("Kode Beban (kdbeban)", opts_beban)
+            opts_beban = sorted(main_df['kdbeban'].dropna().unique().tolist()) if 'kdbeban' in main_df.columns else []
+            sel_beban = st.multiselect("Kode Beban (kdbeban)", opts_beban)
         with row1_c3:
             if 'kdsatker' in main_df.columns:
                 if 'nmsatker' in main_df.columns:
                     satker_pairs = main_df[['kdsatker', 'nmsatker']].dropna(subset=['kdsatker']).drop_duplicates()
                     satker_pairs['nmsatker'] = satker_pairs['nmsatker'].fillna("N/A")
-                    opts_satker = ['All'] + sorted([f"{row['kdsatker']} - {row['nmsatker']}" for idx, row in satker_pairs.iterrows()])
+                    opts_satker = sorted([f"{row['kdsatker']} - {row['nmsatker']}" for idx, row in satker_pairs.iterrows()])
                 else:
-                    opts_satker = ['All'] + sorted(main_df['kdsatker'].dropna().unique().tolist())
+                    opts_satker = sorted(main_df['kdsatker'].dropna().unique().tolist())
             else:
-                opts_satker = ['All']
-            sel_satker = st.selectbox("Kode Satker (kdsatker)", opts_satker)
+                opts_satker = []
+            sel_satker = st.multiselect("Kode Satker (kdsatker)", opts_satker)
             
-        k_sat = sel_satker.split(" - ")[0] if sel_satker != 'All' else ''
+        k_sat_list = [s.split(" - ")[0] for s in sel_satker]
+        show_dirbag = ('527010' in k_sat_list)
         
         row2_c1, row2_c2, row2_c3 = st.columns(3)
         with row2_c1:
             if 'kdskmpnen' in main_df.columns:
                 skmp_pairs = main_df[['kdskmpnen', 'urskmpnen']].dropna().drop_duplicates()
-                skmp_list = ['All'] + [f"{row['kdskmpnen']} - {row['urskmpnen']}" for idx, row in skmp_pairs.iterrows()]
+                skmp_list = [f"{row['kdskmpnen']} - {row['urskmpnen']}" for idx, row in skmp_pairs.iterrows()]
             else:
-                skmp_list = ['All']
-            sel_skmpnen = st.selectbox("Subkomponen", skmp_list)
+                skmp_list = []
+            sel_skmpnen = st.multiselect("Subkomponen", skmp_list)
             
         with row2_c2:
-            sel_dirbag = 'All'
-            if k_sat == '527010' and 'kddirbag' in main_df.columns:
+            sel_dirbag = []
+            if show_dirbag and 'kddirbag' in main_df.columns:
                 base_527010 = main_df[main_df['kdsatker'] == '527010']
                 mask_tagged = base_527010['kddirbag'].astype(str).str.upper().str.startswith('PB.')
 
@@ -648,48 +649,59 @@ with tab_dashboard:
                 # PB.xx code, so they're selectable/inspectable instead of
                 # silently vanishing from the filter while still showing
                 # up (as "Belum Tertandai") in the summary table below.
-                opts_dirbag = ['All'] + opts_dirbag
                 if (~mask_tagged).any():
                     opts_dirbag.append('UNTAGGED - Belum Tertandai')
 
-                sel_dirbag = st.selectbox("Direktorat/Bagian", opts_dirbag)
+                sel_dirbag = st.multiselect("Direktorat/Bagian", opts_dirbag)
                 
         with row2_c3:
             if all(c in main_df.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput']):
                 ro_pairs = main_df[['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput']].dropna().drop_duplicates()
-                ro_list = ['All'] + sorted([f"{row['kdprogram']}.{row['kdgiat']}.{row['kdoutput']}.{row['kdsoutput']} - {row['ursoutput']}" for idx, row in ro_pairs.iterrows()])
+                ro_list = sorted([f"{row['kdprogram']}.{row['kdgiat']}.{row['kdoutput']}.{row['kdsoutput']} - {row['ursoutput']}" for idx, row in ro_pairs.iterrows()])
             else:
-                ro_list = ['All']
-            sel_ro = st.selectbox("Rincian Output", ro_list)
+                ro_list = []
+            sel_ro = st.multiselect("Rincian Output", ro_list)
 
         row3_c1, row3_c2, row3_c3 = st.columns(3)
         with row3_c1:
-            opts_akun = ['All'] + sorted(main_df['kdakun'].dropna().unique().tolist()) if 'kdakun' in main_df.columns else ['All']
-            sel_akun = st.selectbox("Kode Akun (kdakun)", opts_akun)
+            opts_akun = sorted(main_df['kdakun'].dropna().unique().tolist()) if 'kdakun' in main_df.columns else []
+            sel_akun = st.multiselect("Kode Akun (kdakun)", opts_akun)
 
         # Apply filters
         f_df = main_df.copy()
-        if sel_akun != 'All' and 'kdakun' in f_df.columns: f_df = f_df[f_df['kdakun'] == sel_akun]
-        if sel_thang != 'All': f_df = f_df[f_df['thang'] == sel_thang]
-        if sel_beban != 'All': f_df = f_df[f_df['kdbeban'] == sel_beban]
-        if k_sat != '': f_df = f_df[f_df['kdsatker'] == k_sat]
-        if sel_skmpnen != 'All':
-            k_val = sel_skmpnen.split(" - ")[0]
-            f_df = f_df[f_df['kdskmpnen'] == k_val]
-        if sel_dirbag != 'All':
-            if sel_dirbag.startswith('UNTAGGED'):
-                f_df = f_df[~f_df['kddirbag'].astype(str).str.upper().str.startswith('PB.')]
-            else:
-                k_dir = sel_dirbag.split(" - ")[0]
-                f_df = f_df[f_df['kddirbag'] == k_dir]
-        if sel_ro != 'All':
-            k_ro_parts = sel_ro.split(" - ")[0].split(".")
-            if len(k_ro_parts) == 4:
-                k_prog, k_giat, k_out, k_sout = k_ro_parts
-                f_df = f_df[(f_df['kdprogram'] == k_prog) & 
-                            (f_df['kdgiat'] == k_giat) & 
-                            (f_df['kdoutput'] == k_out) & 
-                            (f_df['kdsoutput'] == k_sout)]
+        if sel_akun and 'kdakun' in f_df.columns:
+            f_df = f_df[f_df['kdakun'].isin(sel_akun)]
+        if sel_thang:
+            f_df = f_df[f_df['thang'].isin(sel_thang)]
+        if sel_beban:
+            f_df = f_df[f_df['kdbeban'].isin(sel_beban)]
+        if k_sat_list:
+            f_df = f_df[f_df['kdsatker'].isin(k_sat_list)]
+        if sel_skmpnen:
+            k_vals = [s.split(" - ")[0] for s in sel_skmpnen]
+            f_df = f_df[f_df['kdskmpnen'].isin(k_vals)]
+        if sel_dirbag:
+            untagged_selected = 'UNTAGGED - Belum Tertandai' in sel_dirbag
+            tagged_codes = [s.split(" - ")[0] for s in sel_dirbag if s != 'UNTAGGED - Belum Tertandai']
+            mask = pd.Series(False, index=f_df.index)
+            if tagged_codes:
+                mask |= f_df['kddirbag'].isin(tagged_codes)
+            if untagged_selected:
+                mask |= ~f_df['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+            f_df = f_df[mask]
+        if sel_ro:
+            ro_keys = []
+            for s in sel_ro:
+                parts = s.split(" - ")[0].split(".")
+                if len(parts) == 4:
+                    ro_keys.append(tuple(parts))
+            if ro_keys:
+                ro_series = (
+                    f_df['kdprogram'].astype(str) + '|' + f_df['kdgiat'].astype(str) + '|' +
+                    f_df['kdoutput'].astype(str) + '|' + f_df['kdsoutput'].astype(str)
+                )
+                valid_keys = ['|'.join(t) for t in ro_keys]
+                f_df = f_df[ro_series.isin(valid_keys)]
 
         # Ensure amounts are properly aggregated
         if 'jumlah' in f_df.columns:
@@ -702,31 +714,39 @@ with tab_dashboard:
 
         def _apply_dashboard_filters(df):
             d = df.copy()
-            if sel_thang != 'All' and 'thang' in d.columns:
-                d = d[d['thang'] == sel_thang]
-            if sel_beban != 'All' and 'kdbeban' in d.columns:
-                d = d[d['kdbeban'] == sel_beban]
-            if k_sat != '' and 'kdsatker' in d.columns:
-                d = d[d['kdsatker'] == k_sat]
-            if sel_skmpnen != 'All' and 'kdskmpnen' in d.columns:
-                k_val = sel_skmpnen.split(" - ")[0]
-                d = d[d['kdskmpnen'] == k_val]
-            if sel_dirbag != 'All' and 'kddirbag' in d.columns:
-                if sel_dirbag.startswith('UNTAGGED'):
-                    d = d[~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')]
-                else:
-                    k_dir = sel_dirbag.split(" - ")[0]
-                    d = d[d['kddirbag'] == k_dir]
-            if sel_ro != 'All':
-                k_ro_parts = sel_ro.split(" - ")[0].split(".")
-                if len(k_ro_parts) == 4 and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
-                    k_prog, k_giat, k_out, k_sout = k_ro_parts
-                    d = d[(d['kdprogram'] == k_prog) &
-                          (d['kdgiat'] == k_giat) &
-                          (d['kdoutput'] == k_out) &
-                          (d['kdsoutput'] == k_sout)]
-            if sel_akun != 'All' and 'kdakun' in d.columns:
-                d = d[d['kdakun'] == sel_akun]
+            if sel_thang and 'thang' in d.columns:
+                d = d[d['thang'].isin(sel_thang)]
+            if sel_beban and 'kdbeban' in d.columns:
+                d = d[d['kdbeban'].isin(sel_beban)]
+            if k_sat_list and 'kdsatker' in d.columns:
+                d = d[d['kdsatker'].isin(k_sat_list)]
+            if sel_skmpnen and 'kdskmpnen' in d.columns:
+                k_vals = [s.split(" - ")[0] for s in sel_skmpnen]
+                d = d[d['kdskmpnen'].isin(k_vals)]
+            if sel_dirbag and 'kddirbag' in d.columns:
+                untagged_selected = 'UNTAGGED - Belum Tertandai' in sel_dirbag
+                tagged_codes = [s.split(" - ")[0] for s in sel_dirbag if s != 'UNTAGGED - Belum Tertandai']
+                mask = pd.Series(False, index=d.index)
+                if tagged_codes:
+                    mask |= d['kddirbag'].isin(tagged_codes)
+                if untagged_selected:
+                    mask |= ~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+                d = d[mask]
+            if sel_ro and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
+                ro_keys = []
+                for s in sel_ro:
+                    parts = s.split(" - ")[0].split(".")
+                    if len(parts) == 4:
+                        ro_keys.append(tuple(parts))
+                if ro_keys:
+                    ro_series = (
+                        d['kdprogram'].astype(str) + '|' + d['kdgiat'].astype(str) + '|' +
+                        d['kdoutput'].astype(str) + '|' + d['kdsoutput'].astype(str)
+                    )
+                    valid_keys = ['|'.join(t) for t in ro_keys]
+                    d = d[ro_series.isin(valid_keys)]
+            if sel_akun and 'kdakun' in d.columns:
+                d = d[d['kdakun'].isin(sel_akun)]
             return d
 
         compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
@@ -735,7 +755,6 @@ with tab_dashboard:
             compare_df['jumlah'] = pd.to_numeric(compare_df['jumlah'], errors='coerce').fillna(0)
 
         group_cols = ['kdsatker', 'nmsatker']
-        show_dirbag = (k_sat == '527010')
         if show_dirbag and 'satdirbag' in compare_df.columns:
             group_cols.append('satdirbag')
 
