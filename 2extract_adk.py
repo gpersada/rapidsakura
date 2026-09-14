@@ -878,11 +878,19 @@ with tab_dashboard:
         if f_df.empty:
             st.warning("No data based on the current filters.")
         else:
-            st.markdown("**Pagu per Rincian Output**")
-            ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'source', 'jumlah']
+                        st.markdown("**Pagu per Rincian Output**")
+            ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdsatker', 'source', 'jumlah']
             if all(c in compare_df.columns for c in ro_cols):
+                ro_base = compare_df.copy()
+                ro_base['Full RO'] = (
+                    ro_base['kdprogram'].astype(str) + '.' +
+                    ro_base['kdgiat'].astype(str) + '.' +
+                    ro_base['kdoutput'].astype(str) + '.' +
+                    ro_base['kdsoutput'].astype(str)
+                )
+
                 ro_pivot = (
-                    compare_df.groupby(['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'source'])['jumlah']
+                    ro_base.groupby(['Full RO', 'ursoutput', 'source'])['jumlah']
                     .sum()
                     .unstack('source', fill_value=0)
                     .reset_index()
@@ -890,14 +898,39 @@ with tab_dashboard:
                 for col in ['semula', 'menjadi']:
                     if col not in ro_pivot.columns:
                         ro_pivot[col] = 0
-                ro_pivot['Full RO'] = (
-                    ro_pivot['kdprogram'].astype(str) + '.' +
-                    ro_pivot['kdgiat'].astype(str) + '.' +
-                    ro_pivot['kdoutput'].astype(str) + '.' +
-                    ro_pivot['kdsoutput'].astype(str)
-                )
                 ro_pivot['perubahan'] = ro_pivot['menjadi'] - ro_pivot['semula']
-                out_df = ro_pivot[['Full RO', 'ursoutput', 'semula', 'menjadi', 'perubahan']].rename(columns={
+
+                # volsout is repeated across every item row sharing the same
+                # RO+satker, so average per (Full RO, satker) first to collapse
+                # duplicates, then sum across satkers per Full RO.
+                if 'volsout' in ro_base.columns:
+                    ro_base['volsout'] = pd.to_numeric(ro_base['volsout'], errors='coerce')
+                    vol_per_satker = (
+                        ro_base.groupby(['Full RO', 'kdsatker', 'source'])['volsout']
+                        .mean()
+                        .reset_index()
+                    )
+                    vol_pivot = (
+                        vol_per_satker.groupby(['Full RO', 'source'])['volsout']
+                        .sum()
+                        .unstack('source', fill_value=0)
+                        .reset_index()
+                    )
+                    for col in ['semula', 'menjadi']:
+                        if col not in vol_pivot.columns:
+                            vol_pivot[col] = 0
+                    vol_pivot['perubahan_vol'] = vol_pivot['menjadi'] - vol_pivot['semula']
+                    vol_pivot = vol_pivot.rename(columns={
+                        'semula': 'Volume Semula', 'menjadi': 'Volume Menjadi', 'perubahan_vol': 'Perubahan Volume'
+                    })
+                    ro_pivot = ro_pivot.merge(vol_pivot, on='Full RO', how='left')
+                else:
+                    ro_pivot['Volume Semula'] = 0
+                    ro_pivot['Volume Menjadi'] = 0
+                    ro_pivot['Perubahan Volume'] = 0
+
+                out_df = ro_pivot[['Full RO', 'ursoutput', 'semula', 'menjadi', 'perubahan',
+                                    'Volume Semula', 'Volume Menjadi', 'Perubahan Volume']].rename(columns={
                     'ursoutput': 'Uraian Rincian Output',
                     'semula': 'Pagu Semula',
                     'menjadi': 'Pagu Menjadi',
@@ -905,7 +938,8 @@ with tab_dashboard:
                 })
                 st.dataframe(
                     out_df.style.format(
-                        {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
+                        {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}',
+                         'Volume Semula': '{:,.0f}', 'Volume Menjadi': '{:,.0f}', 'Perubahan Volume': '{:,.0f}'}
                     ).pipe(apply_stripes),
                     column_config={
                         "Full RO": st.column_config.Column(width="small"),
@@ -913,6 +947,9 @@ with tab_dashboard:
                         "Pagu Semula": st.column_config.Column(width="small"),
                         "Pagu Menjadi": st.column_config.Column(width="small"),
                         "Perubahan": st.column_config.Column(width="small"),
+                        "Volume Semula": st.column_config.Column(width="small"),
+                        "Volume Menjadi": st.column_config.Column(width="small"),
+                        "Perubahan Volume": st.column_config.Column(width="small"),
                     },
                     use_container_width=True
                     )
