@@ -859,7 +859,7 @@ with tab_dashboard:
                         st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
             else:
                 st.error("Missing kdprogram column.")
-                    else:
+            else:
                 st.error("Missing kdprogram column.")
 
             st.markdown("**Monitoring Pagu Perjadin**")
