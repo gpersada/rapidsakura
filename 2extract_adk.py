@@ -825,16 +825,16 @@ with tab_dashboard:
                 pagu_non_op = f_df[f_df['kdkmpnen'].isin(['005', '100'])]['jumlah'].sum()
                 
             with m1:
-                st.metric("Pagu Total", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
+                st.metric("**Pagu Total**", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_total_semula)}")
             with m2:
-                st.metric("Pagu Belanja Operasional", _fmt_id(pagu_op), delta=_fmt_delta(pagu_op - pagu_op_semula))
+                st.metric("**Pagu Belanja Operasional**", _fmt_id(pagu_op), delta=_fmt_delta(pagu_op - pagu_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_op_semula)}")
             with m3:
-                st.metric("Pagu Belanja Nonoperasional", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
+                st.metric("**Pagu Belanja Nonoperasional**", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_non_op_semula)}")
 
-            st.markdown("**Pagu per Program**")
+            st.markdown("**>> Pagu per Program**")
             if all(c in compare_df.columns for c in ['kdprogram', 'source', 'jumlah']):
                 prog_pivot = (
                     compare_df.groupby(['kdprogram', 'source'])['jumlah']
@@ -860,7 +860,7 @@ with tab_dashboard:
             else:
                 st.error("Missing kdprogram column.")
 
-            st.markdown("**Monitoring Pagu Perjadin**")
+            st.markdown("**>> Monitoring Pagu Perjadin**")
             PERJADIN_AKUN = ['524111', '524113', '524114', '524119', '524211']
             if all(c in compare_df.columns for c in ['kdakun', 'source', 'jumlah']):
                 perjadin_df = compare_df[compare_df['kdakun'].astype(str).isin(PERJADIN_AKUN)]
