@@ -343,10 +343,45 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
     return dataframes
 
 
+# --- History Management (constants + active-history label helpers,
+# defined early so the "active data" caption right under the page header
+# can use them) ---
+HISTORY_DIR = "history"
+MASTER_DIR = "adk-joined"
+MANIFEST_PATH = os.path.join(HISTORY_DIR, "manifest.csv")
+ACTIVE_HISTORY_FILE = os.path.join(MASTER_DIR, "active_history.txt")
+
+
+def _read_active_history_label():
+    """Reads the persisted label of the history currently active as master
+    (adk-joined/), if any has been posted/loaded before."""
+    if os.path.exists(ACTIVE_HISTORY_FILE):
+        try:
+            with open(ACTIVE_HISTORY_FILE, "r", encoding="utf-8") as f:
+                label = f.read().strip()
+                return label or None
+        except Exception:
+            return None
+    return None
+
+
+def _write_active_history_label(label):
+    """Persists (locally) the label of the history now active as master."""
+    os.makedirs(MASTER_DIR, exist_ok=True)
+    with open(ACTIVE_HISTORY_FILE, "w", encoding="utf-8") as f:
+        f.write(label)
+
+
 # --- Streamlit App UI ---
 st.set_page_config(layout="wide")
 st.title("RAPID - Budget Data Processing Platform")
 st.subheader("Read Analyze Prepare Integrate Dashboard")
+
+st.session_state.setdefault(
+    'active_history_label',
+    _read_active_history_label() or "Belum ada data master yang diposting"
+)
+st.caption(f"📌 Data aktif saat ini: **{st.session_state.active_history_label}**")
 
 def apply_stripes(styler):
     import pandas as pd
@@ -355,12 +390,6 @@ def apply_stripes(styler):
 
 
 tab_etl, tab_dashboard, tab_office, tab_reporting = st.tabs(["ETL Process", "BI Dashboard", "Office Allocation", "Reporting & Matriks"])
-
-
-# --- History Management ---
-HISTORY_DIR = "history"
-MASTER_DIR = "adk-joined"
-MANIFEST_PATH = os.path.join(HISTORY_DIR, "manifest.csv")
 
 
 def _github_config():
@@ -407,6 +436,26 @@ def commit_to_github(commit_message, files_to_write=None, files_to_delete=None):
         commit_resp = requests.get(f"{base_url}/git/commits/{latest_commit_sha}", headers=headers, timeout=30)
         commit_resp.raise_for_status()
         base_tree_sha = commit_resp.json()["tree"]["sha"]
+
+        # Only ask the Git Data API to delete paths that actually exist in
+        # the remote tree. Requesting sha=None for a path that was never
+        # successfully pushed (e.g. an earlier commit failed with 401/403)
+        # makes /git/trees return 422, since it can't resolve a delete
+        # inside a subtree that doesn't exist remotely.
+        if files_to_delete:
+            remote_tree_resp = requests.get(
+                f"{base_url}/git/trees/{base_tree_sha}", headers=headers,
+                params={"recursive": "1"}, timeout=30,
+            )
+            remote_tree_resp.raise_for_status()
+            remote_paths = {
+                item["path"] for item in remote_tree_resp.json().get("tree", [])
+                if item.get("type") == "blob"
+            }
+            files_to_delete = [
+                p.replace(os.sep, "/") for p in files_to_delete
+                if p.replace(os.sep, "/") in remote_paths
+            ]
 
         tree_items = []
         for path, content in files_to_write.items():
@@ -517,6 +566,11 @@ def post_to_master(master_data_dict, nama_history, catatan_history):
         f.write(manifest_text)
     files_to_commit[MANIFEST_PATH] = manifest_text
 
+    # Mark this history as the active one shown across all tabs.
+    active_label = nama_history.strip()
+    _write_active_history_label(active_label)
+    files_to_commit[ACTIVE_HISTORY_FILE] = active_label
+
     github_ok, github_msg = commit_files_to_github(
         files_to_commit,
         commit_message=f"Post history: {nama_history.strip()} ({history_id})"
@@ -528,19 +582,37 @@ def post_to_master(master_data_dict, nama_history, catatan_history):
 def load_history_to_master(history_id):
     """
     Copies a history entry's files into adk-joined/ (making it the active
-    master), and returns the loaded dataframes as a dict.
+    master), persists + commits the active-history label, and returns the
+    loaded dataframes.
+    Returns (loaded: dict, active_label: str, github_ok: bool, github_msg: str).
     """
     hist_folder = os.path.join(HISTORY_DIR, history_id)
     os.makedirs(MASTER_DIR, exist_ok=True)
     loaded = {}
+    files_to_commit = {}
     for prefix in TARGET_FILES.keys():
         src = os.path.join(hist_folder, f"{prefix}.csv")
         if os.path.exists(src):
-            shutil.copy(src, os.path.join(MASTER_DIR, f"{prefix}.csv"))
+            dst = os.path.join(MASTER_DIR, f"{prefix}.csv")
+            shutil.copy(src, dst)
+            with open(src, "r", encoding="utf-8") as f:
+                files_to_commit[dst] = f.read()
             loaded[prefix] = pd.read_csv(src, sep='|', dtype=str)
             if 'jumlah' in loaded[prefix].columns:
                 loaded[prefix]['jumlah'] = pd.to_numeric(loaded[prefix]['jumlah'], errors='coerce').fillna(0)
-    return loaded
+
+    manifest = load_history_manifest()
+    match = manifest.loc[manifest['history_id'].astype(str) == str(history_id), 'nama_history']
+    active_label = match.iloc[0] if not match.empty else history_id
+    _write_active_history_label(active_label)
+    files_to_commit[ACTIVE_HISTORY_FILE] = active_label
+
+    github_ok, github_msg = commit_to_github(
+        commit_message=f"Load history to master: {history_id}",
+        files_to_write=files_to_commit,
+    )
+
+    return loaded, active_label, github_ok, github_msg
 
 
 def delete_history(history_id):
@@ -619,11 +691,17 @@ with tab_etl:
             sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
             if st.button("🔄 Load History ke Master"):
                 chosen_id = sel_hist.split(" | ")[0]
-                loaded = load_history_to_master(chosen_id)
+                with st.spinner("Meload history & mengirim ke GitHub..."):
+                    loaded, active_label, github_ok, github_msg = load_history_to_master(chosen_id)
                 st.session_state.master_data = {
                     prefix: loaded.get(prefix, pd.DataFrame()) for prefix in TARGET_FILES.keys()
                 }
+                st.session_state.active_history_label = active_label
                 st.success(f"History '{chosen_id}' berhasil di-load ke Master. Tab lain (BI Dashboard, dsb.) sekarang menggunakan data ini.")
+                if github_ok:
+                    st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`).")
+                else:
+                    st.warning(f"⚠️ Termuat lokal, tapi GAGAL push ke GitHub: {github_msg}\n\nStatus ini **tidak akan bertahan** setelah app di-redeploy sampai push berhasil.")
 
             st.write("---")
             st.markdown("**🗑️ Hard Delete History**")
@@ -729,6 +807,15 @@ with tab_etl:
                     f"`{d_prefix}` sebagai fallback, dengan pagu/volume (jumlah/volsout) = 0."
                 )
 
+        # Mark this as unposted data actively in use for the current
+        # session (all other tabs read from st.session_state.master_data
+        # first - see load_adk_data() - so it's already live without
+        # needing "Post ke Master").
+        st.session_state.active_history_label = (
+            f"⚡ Data ADK baru hasil upload (belum di-Post ke Master) — "
+            f"diproses {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
         st.write("---")
         st.header("✅ Processing Complete!")
 
@@ -758,7 +845,7 @@ with tab_etl:
 
         st.write("---")
         st.subheader("📤 Post ke Master")
-        st.caption("Data di atas baru tersimpan sementara. Beri nama & catatan history, lalu Post untuk menjadikannya data aktif yang dipakai tab BI Dashboard, Office Allocation, dan Reporting & Matriks.")
+        st.caption("Data di atas sudah langsung dipakai tab BI Dashboard, Office Allocation, dan Reporting & Matriks di sesi ini. Post ke Master bersifat opsional: gunakan untuk memberi nama & catatan history, serta menyimpannya secara permanen ke GitHub agar bertahan setelah app di-redeploy / dipakai sesi lain.")
         nama_history = st.text_input("Nama History", key="nama_history_input")
         catatan_history = st.text_area("Catatan History", key="catatan_history_input")
         if st.button("📤 Post ke Master", type="primary"):
@@ -767,6 +854,7 @@ with tab_etl:
             else:
                 with st.spinner("Menyimpan & mengirim ke GitHub..."):
                     history_id, github_ok, github_msg = post_to_master(st.session_state.master_data, nama_history, catatan_history)
+                st.session_state.active_history_label = nama_history.strip()
                 st.success(f"Berhasil diposting ke Master dengan ID history: `{history_id}`")
                 if github_ok:
                     st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`). App akan otomatis redeploy dalam ~1 menit.")
@@ -779,11 +867,29 @@ with tab_etl:
 
 # --- Shared Data Loading & Join Functions ---
 def load_adk_data():
+    """
+    Loads data for all tabs, preferring the ADK just processed in the
+    current session (st.session_state.master_data - staged there right
+    after "Process Uploaded Files", before any "Post ke Master") over the
+    persisted master in adk-joined/. This lets a freshly uploaded ADK show
+    up immediately in BI Dashboard / Office Allocation / Reporting &
+    Matriks, without requiring a Post first. Falls back to adk-joined/ for
+    any prefix not (yet) processed in this session - e.g. right after
+    opening the app, or for prefixes untouched by the latest upload.
+    """
     import os, pandas as pd
     data = {}
     missing = []
+    session_master = st.session_state.get('master_data', {})
     for prefix in ['d_item', 'd_akun', 'd_skmpnen', 'd_soutput', 'd_cttakun', 'm_item', 'm_akun', 'm_skmpnen','m_soutput']:
-        path = f"adk-joined/{prefix}.csv"
+        session_df = session_master.get(prefix)
+        if session_df is not None and not session_df.empty:
+            df = session_df.copy()
+            if 'jumlah' in df.columns:
+                df['jumlah'] = pd.to_numeric(df['jumlah'], errors='coerce').fillna(0)
+            data[prefix] = df
+            continue
+        path = os.path.join(MASTER_DIR, f"{prefix}.csv")
         if os.path.exists(path):
             data[prefix] = pd.read_csv(path, sep='|', dtype=str)
             if 'jumlah' in data[prefix].columns:
@@ -1131,7 +1237,8 @@ with tab_dashboard:
             pagu_total_semula = semula_only['jumlah'].sum()
             if 'kdkmpnen' in semula_only.columns:
                 pagu_op_semula = semula_only[semula_only['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
-                pagu_non_op_semula = semula_only[semula_only['kdkmpnen'].isin(['005', '100'])]['jumlah'].sum()
+                # Nonoperasional = semua komponen SELAIN 001 (Pegawai) dan 002 (Barang Operasional)
+                pagu_non_op_semula = semula_only[~semula_only['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
 
         def _fmt_id(v):
             return f"{v:,.0f}".replace(",", ".")
@@ -1146,7 +1253,8 @@ with tab_dashboard:
             pagu_non_op = 0
             if 'kdkmpnen' in f_df.columns:
                 pagu_op = f_df[f_df['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
-                pagu_non_op = f_df[f_df['kdkmpnen'].isin(['005', '100'])]['jumlah'].sum()
+                # Nonoperasional = semua komponen SELAIN 001 (Pegawai) dan 002 (Barang Operasional)
+                pagu_non_op = f_df[~f_df['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
                 
             with m1:
                 st.metric("Pagu Total", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
