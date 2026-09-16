@@ -26,6 +26,8 @@ import io
 import base64
 import shutil
 import subprocess
+from datetime import datetime
+import requests
 # pyrefly: ignore [missing-import]
 import altair as alt
 
@@ -354,6 +356,167 @@ def apply_stripes(styler):
 
 tab_etl, tab_dashboard, tab_office, tab_reporting = st.tabs(["ETL Process", "BI Dashboard", "Office Allocation", "Reporting & Matriks"])
 
+
+# --- History Management ---
+HISTORY_DIR = "history"
+MASTER_DIR = "adk-joined"
+MANIFEST_PATH = os.path.join(HISTORY_DIR, "manifest.csv")
+
+
+def _github_config():
+    """Reads GitHub repo config + token from Streamlit secrets (Settings > Secrets)."""
+    try:
+        gh = st.secrets["github"]
+        token = gh["token"]
+        repo = gh["repo"]
+        branch = gh.get("branch", "main")
+        return token, repo, branch
+    except Exception:
+        return None, None, None
+
+
+def commit_files_to_github(files_dict, commit_message):
+    """
+    Commits multiple files to the GitHub repo in a single atomic commit
+    using the Git Data API (blob -> tree -> commit -> update ref), so the
+    files survive Streamlit Cloud redeploys (which re-clone the repo).
+    files_dict maps repo-relative path -> text content.
+    Returns (success: bool, message: str) - message is the new commit sha
+    on success, or an error description on failure.
+    """
+    token, repo, branch = _github_config()
+    if not token:
+        return False, "GitHub token belum dikonfigurasi di Secrets (Settings > Secrets)."
+
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    base_url = f"https://api.github.com/repos/{repo}"
+
+    try:
+        ref_resp = requests.get(f"{base_url}/git/ref/heads/{branch}", headers=headers, timeout=30)
+        ref_resp.raise_for_status()
+        latest_commit_sha = ref_resp.json()["object"]["sha"]
+
+        commit_resp = requests.get(f"{base_url}/git/commits/{latest_commit_sha}", headers=headers, timeout=30)
+        commit_resp.raise_for_status()
+        base_tree_sha = commit_resp.json()["tree"]["sha"]
+
+        tree_items = []
+        for path, content in files_dict.items():
+            blob_resp = requests.post(
+                f"{base_url}/git/blobs", headers=headers,
+                json={"content": content, "encoding": "utf-8"}, timeout=30,
+            )
+            blob_resp.raise_for_status()
+            tree_items.append({
+                "path": path.replace(os.sep, "/"),
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_resp.json()["sha"],
+            })
+
+        tree_resp = requests.post(
+            f"{base_url}/git/trees", headers=headers,
+            json={"base_tree": base_tree_sha, "tree": tree_items}, timeout=30,
+        )
+        tree_resp.raise_for_status()
+        new_tree_sha = tree_resp.json()["sha"]
+
+        new_commit_resp = requests.post(
+            f"{base_url}/git/commits", headers=headers,
+            json={"message": commit_message, "tree": new_tree_sha, "parents": [latest_commit_sha]}, timeout=30,
+        )
+        new_commit_resp.raise_for_status()
+        new_commit_sha = new_commit_resp.json()["sha"]
+
+        update_ref_resp = requests.patch(
+            f"{base_url}/git/refs/heads/{branch}", headers=headers,
+            json={"sha": new_commit_sha}, timeout=30,
+        )
+        update_ref_resp.raise_for_status()
+
+        return True, new_commit_sha
+
+    except requests.exceptions.RequestException as e:
+        return False, str(e)
+
+
+
+def load_history_manifest():
+    """Returns the history manifest as a DataFrame (empty if none exists yet)."""
+    if os.path.exists(MANIFEST_PATH):
+        return pd.read_csv(MANIFEST_PATH, sep='|', dtype=str)
+    return pd.DataFrame(columns=['history_id', 'nama_history', 'catatan_history', 'waktu_posting'])
+
+
+def post_to_master(master_data_dict, nama_history, catatan_history):
+    """
+    Archives the currently processed data under history/{history_id}/,
+    writes it to adk-joined/ (the active master read by all other tabs),
+    and commits both to GitHub (if configured) so it survives redeploys.
+    Returns (history_id, github_ok, github_msg).
+    """
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', nama_history.strip()) or 'history'
+    history_id = f"{timestamp}_{safe_name}"
+
+    hist_folder = os.path.join(HISTORY_DIR, history_id)
+    os.makedirs(hist_folder, exist_ok=True)
+    os.makedirs(MASTER_DIR, exist_ok=True)
+
+    files_to_commit = {}
+
+    for prefix, df in master_data_dict.items():
+        if df is not None and not df.empty:
+            csv_text = df.to_csv(sep='|', index=False)
+            hist_path = os.path.join(hist_folder, f"{prefix}.csv")
+            master_path = os.path.join(MASTER_DIR, f"{prefix}.csv")
+            with open(hist_path, "w", encoding="utf-8") as f:
+                f.write(csv_text)
+            with open(master_path, "w", encoding="utf-8") as f:
+                f.write(csv_text)
+            files_to_commit[hist_path] = csv_text
+            files_to_commit[master_path] = csv_text
+
+    manifest = load_history_manifest()
+    new_row = pd.DataFrame([{
+        'history_id': history_id,
+        'nama_history': nama_history.strip(),
+        'catatan_history': catatan_history.strip(),
+        'waktu_posting': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }])
+    manifest = pd.concat([manifest, new_row], ignore_index=True)
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    manifest_text = manifest.to_csv(sep='|', index=False)
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+        f.write(manifest_text)
+    files_to_commit[MANIFEST_PATH] = manifest_text
+
+    github_ok, github_msg = commit_files_to_github(
+        files_to_commit,
+        commit_message=f"Post history: {nama_history.strip()} ({history_id})"
+    )
+
+    return history_id, github_ok, github_msg
+
+
+def load_history_to_master(history_id):
+    """
+    Copies a history entry's files into adk-joined/ (making it the active
+    master), and returns the loaded dataframes as a dict.
+    """
+    hist_folder = os.path.join(HISTORY_DIR, history_id)
+    os.makedirs(MASTER_DIR, exist_ok=True)
+    loaded = {}
+    for prefix in TARGET_FILES.keys():
+        src = os.path.join(hist_folder, f"{prefix}.csv")
+        if os.path.exists(src):
+            shutil.copy(src, os.path.join(MASTER_DIR, f"{prefix}.csv"))
+            loaded[prefix] = pd.read_csv(src, sep='|', dtype=str)
+            if 'jumlah' in loaded[prefix].columns:
+                loaded[prefix]['jumlah'] = pd.to_numeric(loaded[prefix]['jumlah'], errors='coerce').fillna(0)
+    return loaded
+
+
 with tab_etl:
     st.markdown("""
     This tool as a part of ETL process to prepare ADK data for BI tools (like Tableau, Looker Studio).  
@@ -361,6 +524,35 @@ with tab_etl:
     1. **Extracts & parses** data using your chosen delimiter.  
     2. **Cleans** all caret (`^`) characters after parsing.
     """)
+
+    # --- Opsi: Load dari History ---
+    with st.expander("📂 Atau: Load Data dari History yang Sudah Diposting"):
+        manifest_df = load_history_manifest()
+        if manifest_df.empty:
+            st.info("Belum ada history yang diposting.")
+        else:
+            st.dataframe(
+                manifest_df[['nama_history', 'catatan_history', 'waktu_posting']].rename(columns={
+                    'nama_history': 'Nama History',
+                    'catatan_history': 'Catatan',
+                    'waktu_posting': 'Waktu Posting',
+                }).iloc[::-1],
+                use_container_width=True
+            )
+            hist_options = [
+                f"{row['history_id']} | {row['nama_history']} ({row['waktu_posting']})"
+                for _, row in manifest_df.iloc[::-1].iterrows()
+            ]
+            sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
+            if st.button("🔄 Load History ke Master"):
+                chosen_id = sel_hist.split(" | ")[0]
+                loaded = load_history_to_master(chosen_id)
+                st.session_state.master_data = {
+                    prefix: loaded.get(prefix, pd.DataFrame()) for prefix in TARGET_FILES.keys()
+                }
+                st.success(f"History '{chosen_id}' berhasil di-load ke Master. Tab lain (BI Dashboard, dsb.) sekarang menggunakan data ini.")
+
+    st.write("---")
 
     delimiter = st.selectbox(
         '1. Select the delimiter to use on the CLEANED data',
@@ -389,11 +581,9 @@ with tab_etl:
                         )
                 progress_bar.progress((i + 1) / len(uploaded_files))
         
-        # Apply headers, drop columns, and save to adk-joined
-        join_dir = "adk-joined"
-        if not os.path.exists(join_dir):
-            os.makedirs(join_dir)
-
+        # Apply headers and clean columns (staged in session_state only -
+        # not written to adk-joined/ yet; use "Post ke Master" below to
+        # commit this as the active master data).
         for prefix in TARGET_FILES.keys():
             master_df = st.session_state.master_data.get(prefix, pd.DataFrame())
             if not master_df.empty:
@@ -416,11 +606,6 @@ with tab_etl:
                     cleaned_df['jumlah'] = pd.to_numeric(cleaned_df['jumlah'], errors='coerce').fillna(0)
 
                 st.session_state.master_data[prefix] = cleaned_df
-                
-                # Save as CSV
-                output_path = os.path.join(join_dir, f"{prefix}.csv")
-                cleaned_df.to_csv(output_path, index=False, sep='|')
-                st.success(f"Saved {prefix} to {output_path}")
 
         st.write("---")
         st.header("✅ Processing Complete!")
@@ -448,6 +633,23 @@ with tab_etl:
                     )
                 else:
                     st.warning("No data found for this file type.")
+
+        st.write("---")
+        st.subheader("📤 Post ke Master")
+        st.caption("Data di atas baru tersimpan sementara. Beri nama & catatan history, lalu Post untuk menjadikannya data aktif yang dipakai tab BI Dashboard, Office Allocation, dan Reporting & Matriks.")
+        nama_history = st.text_input("Nama History", key="nama_history_input")
+        catatan_history = st.text_area("Catatan History", key="catatan_history_input")
+        if st.button("📤 Post ke Master", type="primary"):
+            if not nama_history.strip():
+                st.error("Nama History wajib diisi.")
+            else:
+                with st.spinner("Menyimpan & mengirim ke GitHub..."):
+                    history_id, github_ok, github_msg = post_to_master(st.session_state.master_data, nama_history, catatan_history)
+                st.success(f"Berhasil diposting ke Master dengan ID history: `{history_id}`")
+                if github_ok:
+                    st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`). App akan otomatis redeploy dalam ~1 menit.")
+                else:
+                    st.warning(f"⚠️ Data tersimpan lokal, tapi GAGAL push ke GitHub: {github_msg}\n\nHistory ini **tidak akan bertahan** setelah app di-redeploy sampai push berhasil.")
     else:
         st.info("No data has been processed yet.")
 
@@ -825,16 +1027,16 @@ with tab_dashboard:
                 pagu_non_op = f_df[f_df['kdkmpnen'].isin(['005', '100'])]['jumlah'].sum()
                 
             with m1:
-                st.metric("**Pagu Total**", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
+                st.metric("Pagu Total", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_total_semula)}")
             with m2:
-                st.metric("**Pagu Belanja Operasional**", _fmt_id(pagu_op), delta=_fmt_delta(pagu_op - pagu_op_semula))
+                st.metric("Pagu Belanja Operasional", _fmt_id(pagu_op), delta=_fmt_delta(pagu_op - pagu_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_op_semula)}")
             with m3:
-                st.metric("**Pagu Belanja Nonoperasional**", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
+                st.metric("Pagu Belanja Nonoperasional", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_non_op_semula)}")
 
-            st.markdown("**>> Pagu per Program**")
+            st.markdown("**Pagu per Program**")
             if all(c in compare_df.columns for c in ['kdprogram', 'source', 'jumlah']):
                 prog_pivot = (
                     compare_df.groupby(['kdprogram', 'source'])['jumlah']
@@ -859,18 +1061,6 @@ with tab_dashboard:
                         st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
             else:
                 st.error("Missing kdprogram column.")
-
-            st.markdown("**>> Monitoring Pagu Perjadin**")
-            PERJADIN_AKUN = ['524111', '524113', '524114', '524119', '524211']
-            if all(c in compare_df.columns for c in ['kdakun', 'source', 'jumlah']):
-                perjadin_df = compare_df[compare_df['kdakun'].astype(str).isin(PERJADIN_AKUN)]
-                pj_semula = perjadin_df[perjadin_df['source'] == 'semula']['jumlah'].sum()
-                pj_menjadi = perjadin_df[perjadin_df['source'] == 'menjadi']['jumlah'].sum()
-                pj_perubahan = pj_menjadi - pj_semula
-                st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta(pj_perubahan))
-                st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
-            else:
-                st.error("Missing kdakun column.")
                 
         st.write("---")
         
