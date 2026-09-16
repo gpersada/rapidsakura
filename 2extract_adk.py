@@ -375,15 +375,23 @@ def _github_config():
         return None, None, None
 
 
-def commit_files_to_github(files_dict, commit_message):
+def commit_to_github(commit_message, files_to_write=None, files_to_delete=None):
     """
-    Commits multiple files to the GitHub repo in a single atomic commit
-    using the Git Data API (blob -> tree -> commit -> update ref), so the
-    files survive Streamlit Cloud redeploys (which re-clone the repo).
-    files_dict maps repo-relative path -> text content.
+    Atomically writes and/or deletes files in the GitHub repo in a single
+    commit, using the Git Data API (blob -> tree -> commit -> update ref),
+    so changes survive Streamlit Cloud redeploys (which re-clone the repo).
+
+    files_to_write maps repo-relative path -> text content (blobs are
+    created and upserted into the tree). files_to_delete is a list of
+    repo-relative paths to remove from the tree (their blob sha is set to
+    None, which is how the Git Data API deletes a path).
+
     Returns (success: bool, message: str) - message is the new commit sha
     on success, or an error description on failure.
     """
+    files_to_write = files_to_write or {}
+    files_to_delete = files_to_delete or []
+
     token, repo, branch = _github_config()
     if not token:
         return False, "GitHub token belum dikonfigurasi di Secrets (Settings > Secrets)."
@@ -401,7 +409,7 @@ def commit_files_to_github(files_dict, commit_message):
         base_tree_sha = commit_resp.json()["tree"]["sha"]
 
         tree_items = []
-        for path, content in files_dict.items():
+        for path, content in files_to_write.items():
             blob_resp = requests.post(
                 f"{base_url}/git/blobs", headers=headers,
                 json={"content": content, "encoding": "utf-8"}, timeout=30,
@@ -413,6 +421,19 @@ def commit_files_to_github(files_dict, commit_message):
                 "type": "blob",
                 "sha": blob_resp.json()["sha"],
             })
+
+        for path in files_to_delete:
+            # Setting sha to None tells the Git Data API to remove this
+            # path from the resulting tree.
+            tree_items.append({
+                "path": path.replace(os.sep, "/"),
+                "mode": "100644",
+                "type": "blob",
+                "sha": None,
+            })
+
+        if not tree_items:
+            return True, latest_commit_sha  # nothing to commit
 
         tree_resp = requests.post(
             f"{base_url}/git/trees", headers=headers,
@@ -438,6 +459,11 @@ def commit_files_to_github(files_dict, commit_message):
 
     except requests.exceptions.RequestException as e:
         return False, str(e)
+
+
+def commit_files_to_github(files_dict, commit_message):
+    """Backward-compatible wrapper around commit_to_github (write-only)."""
+    return commit_to_github(commit_message, files_to_write=files_dict)
 
 
 
@@ -517,6 +543,53 @@ def load_history_to_master(history_id):
     return loaded
 
 
+def delete_history(history_id):
+    """
+    Hard-deletes a posted history entry:
+      - removes its row from history/manifest.csv,
+      - deletes its local folder history/{history_id}/,
+      - deletes its files from the GitHub repo (permanent, not recoverable
+        from GitHub history/reflog via the UI).
+
+    Does NOT touch adk-joined/ (the active master data). If this history
+    happens to be the one currently active as master, adk-joined/ is left
+    untouched - post a new history or load a different one to change it.
+
+    Returns (ok: bool, github_ok: bool, msg: str).
+    """
+    manifest = load_history_manifest()
+    if history_id not in manifest['history_id'].astype(str).values:
+        return False, False, f"History '{history_id}' tidak ditemukan di manifest."
+
+    hist_folder = os.path.join(HISTORY_DIR, history_id)
+
+    # Collect repo-relative paths of files to delete from GitHub.
+    paths_to_delete = []
+    if os.path.isdir(hist_folder):
+        for fname in os.listdir(hist_folder):
+            paths_to_delete.append(os.path.join(hist_folder, fname))
+
+    # Rewrite the manifest without this history_id.
+    manifest = manifest[manifest['history_id'].astype(str) != str(history_id)]
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    manifest_text = manifest.to_csv(sep='|', index=False)
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+        f.write(manifest_text)
+
+    # Remove the local history folder.
+    if os.path.isdir(hist_folder):
+        shutil.rmtree(hist_folder)
+
+    # Push the deletion + updated manifest to GitHub as a single commit.
+    github_ok, github_msg = commit_to_github(
+        commit_message=f"Hard delete history: {history_id}",
+        files_to_write={MANIFEST_PATH: manifest_text},
+        files_to_delete=paths_to_delete,
+    )
+
+    return True, github_ok, github_msg
+
+
 with tab_etl:
     st.markdown("""
     This tool as a part of ETL process to prepare ADK data for BI tools (like Tableau, Looker Studio).  
@@ -551,6 +624,29 @@ with tab_etl:
                     prefix: loaded.get(prefix, pd.DataFrame()) for prefix in TARGET_FILES.keys()
                 }
                 st.success(f"History '{chosen_id}' berhasil di-load ke Master. Tab lain (BI Dashboard, dsb.) sekarang menggunakan data ini.")
+
+            st.write("---")
+            st.markdown("**🗑️ Hard Delete History**")
+            st.caption(
+                "Menghapus history secara PERMANEN dari lokal & GitHub (tidak bisa dibatalkan). "
+                "Data master aktif (`adk-joined/`) tidak ikut terhapus/berubah oleh aksi ini."
+            )
+            confirm_delete = st.checkbox(
+                f"Saya yakin ingin menghapus history `{sel_hist.split(' | ')[0]}` secara permanen",
+                key="confirm_delete_history"
+            )
+            if st.button("🗑️ Hard Delete History Terpilih", disabled=not confirm_delete):
+                chosen_id_del = sel_hist.split(" | ")[0]
+                with st.spinner("Menghapus history & mengirim ke GitHub..."):
+                    ok, github_ok, msg = delete_history(chosen_id_del)
+                if ok:
+                    st.success(f"History '{chosen_id_del}' dihapus dari manifest & folder lokal.")
+                    if github_ok:
+                        st.success(f"✅ Berhasil dihapus permanen dari GitHub (commit `{msg[:7]}`). App akan otomatis redeploy dalam ~1 menit.")
+                    else:
+                        st.warning(f"⚠️ Terhapus lokal, tapi GAGAL dihapus di GitHub: {msg}\n\nFile ini akan **muncul kembali** setelah app di-redeploy sampai penghapusan berhasil di-push.")
+                else:
+                    st.error(msg)
 
     st.write("---")
 
@@ -606,6 +702,32 @@ with tab_etl:
                     cleaned_df['jumlah'] = pd.to_numeric(cleaned_df['jumlah'], errors='coerce').fillna(0)
 
                 st.session_state.master_data[prefix] = cleaned_df
+
+        # --- Fallback: derive missing M_* data from its D_* counterpart ---
+        # If an M_ file wasn't present in the uploaded ADK, use the D_ file
+        # instead (M_ and D_ share identical column schemas for item/akun/
+        # skmpnen/soutput), but zero out pagu (jumlah) and volume (volsout)
+        # since those M_-specific "semula" values weren't actually provided.
+        FALLBACK_M_FROM_D = {
+            'm_item': 'd_item',
+            'm_akun': 'd_akun',
+            'm_skmpnen': 'd_skmpnen',
+            'm_soutput': 'd_soutput',
+        }
+        for m_prefix, d_prefix in FALLBACK_M_FROM_D.items():
+            m_df = st.session_state.master_data.get(m_prefix, pd.DataFrame())
+            d_df = st.session_state.master_data.get(d_prefix, pd.DataFrame())
+            if m_df.empty and not d_df.empty:
+                fallback_df = d_df.copy()
+                if 'jumlah' in fallback_df.columns:
+                    fallback_df['jumlah'] = 0
+                if 'volsout' in fallback_df.columns:
+                    fallback_df['volsout'] = 0
+                st.session_state.master_data[m_prefix] = fallback_df
+                st.info(
+                    f"ℹ️ `{m_prefix}` tidak ditemukan di file upload — menggunakan data "
+                    f"`{d_prefix}` sebagai fallback, dengan pagu/volume (jumlah/volsout) = 0."
+                )
 
         st.write("---")
         st.header("✅ Processing Complete!")
