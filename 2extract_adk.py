@@ -382,9 +382,23 @@ st.session_state.setdefault(
     _read_active_history_label() or "Belum ada data master yang diposting"
 )
 st.session_state.setdefault('has_unposted_data', False)
-st.caption(f"📌 Data aktif saat ini: **{st.session_state.active_history_label}**")
-if st.session_state.has_unposted_data:
-    st.warning("⚠️ Ada data ADK baru yang sudah dimuat & dipakai di semua tab, namun **belum di-Post ke Master** — belum permanen/tersimpan ke GitHub. Kalau app di-redeploy sebelum di-Post, data ini akan hilang. Post di tab **ETL Process** untuk menyimpannya.")
+
+
+def render_active_data_banner():
+    """Renders the 'Data aktif saat ini' caption + unposted-data warning.
+
+    Called once at the top of the page (so it's visible on every tab), and
+    again immediately after any action that changes active_history_label /
+    has_unposted_data (upload+process, Post ke Master, Load History ke
+    Master) - so the notification appears right away in the same run,
+    instead of only on the next rerun.
+    """
+    st.caption(f"📌 Data aktif saat ini: **{st.session_state.active_history_label}**")
+    if st.session_state.has_unposted_data:
+        st.warning("⚠️ Ada data ADK baru yang sudah dimuat & dipakai di semua tab, namun **belum di-Post ke Master** — belum permanen/tersimpan ke GitHub. Kalau app di-redeploy sebelum di-Post, data ini akan hilang. Post di tab **ETL Process** untuk menyimpannya.")
+
+
+render_active_data_banner()
 
 def apply_stripes(styler):
     import pandas as pd
@@ -522,15 +536,24 @@ def commit_files_to_github(files_dict, commit_message):
 def load_history_manifest():
     """Returns the history manifest as a DataFrame (empty if none exists yet)."""
     if os.path.exists(MANIFEST_PATH):
-        return pd.read_csv(MANIFEST_PATH, sep='|', dtype=str)
-    return pd.DataFrame(columns=['history_id', 'nama_history', 'catatan_history', 'waktu_posting'])
+        manifest_df = pd.read_csv(MANIFEST_PATH, sep='|', dtype=str)
+        # Backward-compat: older manifest.csv files predate the
+        # source_filenames column - add it (empty) so downstream code can
+        # always rely on it being present.
+        if 'source_filenames' not in manifest_df.columns:
+            manifest_df['source_filenames'] = ''
+        return manifest_df
+    return pd.DataFrame(columns=['history_id', 'nama_history', 'catatan_history', 'waktu_posting', 'source_filenames'])
 
 
-def post_to_master(master_data_dict, nama_history, catatan_history):
+def post_to_master(master_data_dict, nama_history, catatan_history, source_filenames=""):
     """
     Archives the currently processed data under history/{history_id}/,
     writes it to adk-joined/ (the active master read by all other tabs),
     and commits both to GitHub (if configured) so it survives redeploys.
+    source_filenames: display string (e.g. comma-separated) of the ADK
+    file names that were uploaded & processed to produce this data,
+    recorded in the manifest so it can be shown in "Load Data History".
     Returns (history_id, github_ok, github_msg).
     """
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -561,6 +584,7 @@ def post_to_master(master_data_dict, nama_history, catatan_history):
         'nama_history': nama_history.strip(),
         'catatan_history': catatan_history.strip(),
         'waktu_posting': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'source_filenames': source_filenames.strip() if isinstance(source_filenames, str) else source_filenames,
     }])
     manifest = pd.concat([manifest, new_row], ignore_index=True)
     os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -680,9 +704,10 @@ with tab_etl:
             st.info("Belum ada history yang diposting.")
         else:
             st.dataframe(
-                manifest_df[['nama_history', 'catatan_history', 'waktu_posting']].rename(columns={
+                manifest_df[['nama_history', 'catatan_history', 'source_filenames', 'waktu_posting']].rename(columns={
                     'nama_history': 'Nama History',
                     'catatan_history': 'Catatan',
+                    'source_filenames': 'Nama File Sumber',
                     'waktu_posting': 'Waktu Posting',
                 }).iloc[::-1],
                 use_container_width=True
@@ -706,6 +731,7 @@ with tab_etl:
                     st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`).")
                 else:
                     st.warning(f"⚠️ Termuat lokal, tapi GAGAL push ke GitHub: {github_msg}\n\nStatus ini **tidak akan bertahan** setelah app di-redeploy sampai push berhasil.")
+                render_active_data_banner()
 
             st.write("---")
             st.markdown("**🗑️ Hard Delete History**")
@@ -747,6 +773,9 @@ with tab_etl:
 
     if st.button("Process Uploaded Files", disabled=(not uploaded_files)):
         st.session_state.master_data = {prefix: pd.DataFrame() for prefix in TARGET_FILES.keys()}
+        # Remember which ADK files were uploaded for this processing run, so
+        # it can be recorded in history when/if the user Posts ke Master.
+        st.session_state.uploaded_filenames = [f.name for f in uploaded_files]
         with tempfile.TemporaryDirectory() as temp_dir:
             progress_bar = st.progress(0)
             for i, uploaded_file in enumerate(uploaded_files):
@@ -825,6 +854,9 @@ with tab_etl:
 
         st.write("---")
         st.header("✅ Processing Complete!")
+        # Show the active-data / belum-di-post notification right away in
+        # this same run, instead of waiting for the next rerun.
+        render_active_data_banner()
 
     # --- Consolidated Data Display ---
     st.header("Consolidated & Cleaned Data Summary")
@@ -860,7 +892,12 @@ with tab_etl:
                 st.error("Nama History wajib diisi.")
             else:
                 with st.spinner("Menyimpan & mengirim ke GitHub..."):
-                    history_id, github_ok, github_msg = post_to_master(st.session_state.master_data, nama_history, catatan_history)
+                    history_id, github_ok, github_msg = post_to_master(
+                        st.session_state.master_data,
+                        nama_history,
+                        catatan_history,
+                        source_filenames=", ".join(st.session_state.get('uploaded_filenames', [])),
+                    )
                 st.session_state.active_history_label = nama_history.strip()
                 st.session_state.has_unposted_data = False
                 st.success(f"Berhasil diposting ke Master dengan ID history: `{history_id}`")
@@ -868,6 +905,10 @@ with tab_etl:
                     st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`). App akan otomatis redeploy dalam ~1 menit.")
                 else:
                     st.warning(f"⚠️ Data tersimpan lokal, tapi GAGAL push ke GitHub: {github_msg}\n\nHistory ini **tidak akan bertahan** setelah app di-redeploy sampai push berhasil.")
+                # Reflect the new active-data label immediately (label is
+                # now the just-posted history's name; no more "belum di
+                # post" warning since has_unposted_data is now False).
+                render_active_data_banner()
     else:
         st.info("No data has been processed yet.")
 
