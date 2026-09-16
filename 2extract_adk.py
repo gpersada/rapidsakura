@@ -381,7 +381,10 @@ st.session_state.setdefault(
     'active_history_label',
     _read_active_history_label() or "Belum ada data master yang diposting"
 )
+st.session_state.setdefault('has_unposted_data', False)
 st.caption(f"📌 Data aktif saat ini: **{st.session_state.active_history_label}**")
+if st.session_state.has_unposted_data:
+    st.warning("⚠️ Ada data ADK baru yang sudah dimuat & dipakai di semua tab, namun **belum di-Post ke Master** — belum permanen/tersimpan ke GitHub. Kalau app di-redeploy sebelum di-Post, data ini akan hilang. Post di tab **ETL Process** untuk menyimpannya.")
 
 def apply_stripes(styler):
     import pandas as pd
@@ -697,6 +700,7 @@ with tab_etl:
                     prefix: loaded.get(prefix, pd.DataFrame()) for prefix in TARGET_FILES.keys()
                 }
                 st.session_state.active_history_label = active_label
+                st.session_state.has_unposted_data = False
                 st.success(f"History '{chosen_id}' berhasil di-load ke Master. Tab lain (BI Dashboard, dsb.) sekarang menggunakan data ini.")
                 if github_ok:
                     st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`).")
@@ -810,11 +814,14 @@ with tab_etl:
         # Mark this as unposted data actively in use for the current
         # session (all other tabs read from st.session_state.master_data
         # first - see load_adk_data() - so it's already live without
-        # needing "Post ke Master").
-        st.session_state.active_history_label = (
-            f"⚡ Data ADK baru hasil upload (belum di-Post ke Master) — "
-            f"diproses {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
+        # needing "Post ke Master"). Only flag it if something was
+        # actually extracted, so a failed/empty upload doesn't overwrite
+        # a perfectly good existing active-data label.
+        if any(not df.empty for df in st.session_state.master_data.values()):
+            st.session_state.active_history_label = (
+                f"🆕 Data ADK baru hasil upload — diproses {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            st.session_state.has_unposted_data = True
 
         st.write("---")
         st.header("✅ Processing Complete!")
@@ -855,6 +862,7 @@ with tab_etl:
                 with st.spinner("Menyimpan & mengirim ke GitHub..."):
                     history_id, github_ok, github_msg = post_to_master(st.session_state.master_data, nama_history, catatan_history)
                 st.session_state.active_history_label = nama_history.strip()
+                st.session_state.has_unposted_data = False
                 st.success(f"Berhasil diposting ke Master dengan ID history: `{history_id}`")
                 if github_ok:
                     st.success(f"✅ Tersimpan permanen ke GitHub (commit `{github_msg[:7]}`). App akan otomatis redeploy dalam ~1 menit.")
@@ -1139,6 +1147,52 @@ with tab_dashboard:
 
         st.write("---")
 
+        def _apply_dashboard_filters(df):
+            d = df.copy()
+            if sel_thang and 'thang' in d.columns:
+                d = d[d['thang'].isin(sel_thang)]
+            if sel_beban and 'kdbeban' in d.columns:
+                d = d[d['kdbeban'].isin(sel_beban)]
+            if k_sat_list and 'kdsatker' in d.columns:
+                d = d[d['kdsatker'].isin(k_sat_list)]
+            if sel_skmpnen and 'kdskmpnen' in d.columns:
+                k_vals = [s.split(" - ")[0] for s in sel_skmpnen]
+                d = d[d['kdskmpnen'].isin(k_vals)]
+            if sel_dirbag and 'kddirbag' in d.columns:
+                untagged_selected = 'UNTAGGED - Belum Tertandai' in sel_dirbag
+                tagged_codes = [s.split(" - ")[0] for s in sel_dirbag if s != 'UNTAGGED - Belum Tertandai']
+                mask = pd.Series(False, index=d.index)
+                if tagged_codes:
+                    mask |= d['kddirbag'].isin(tagged_codes)
+                if untagged_selected:
+                    mask |= ~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+                d = d[mask]
+            if sel_ro and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
+                ro_keys = []
+                for s in sel_ro:
+                    parts = s.split(" - ")[0].split(".")
+                    if len(parts) == 4:
+                        ro_keys.append(tuple(parts))
+                if ro_keys:
+                    ro_series = (
+                        d['kdprogram'].astype(str) + '|' + d['kdgiat'].astype(str) + '|' +
+                        d['kdoutput'].astype(str) + '|' + d['kdsoutput'].astype(str)
+                    )
+                    valid_keys = ['|'.join(t) for t in ro_keys]
+                    d = d[ro_series.isin(valid_keys)]
+            if sel_akun and 'kdakun' in d.columns:
+                d = d[d['kdakun'].isin(sel_akun)]
+            return d
+
+        compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
+        compare_df = _apply_dashboard_filters(compare_df)
+        if 'jumlah' in compare_df.columns:
+            compare_df['jumlah'] = pd.to_numeric(compare_df['jumlah'], errors='coerce').fillna(0)
+
+        group_cols = ['kdsatker', 'nmsatker']
+        if show_dirbag and 'satdirbag' in compare_df.columns:
+            group_cols.append('satdirbag')
+
         # --- Metrics ---
         st.subheader("Summary Metrics")
         m1, m2, m3 = st.columns(3)
@@ -1222,54 +1276,9 @@ with tab_dashboard:
                 st.error("Missing kdakun column.")
                 
         st.write("---")
+        
         # --- Ringkasan Pagu Semula vs Menjadi per Satker ---
         st.subheader("Ringkasan Pagu Semula vs Menjadi per Satker")
-
-        def _apply_dashboard_filters(df):
-            d = df.copy()
-            if sel_thang and 'thang' in d.columns:
-                d = d[d['thang'].isin(sel_thang)]
-            if sel_beban and 'kdbeban' in d.columns:
-                d = d[d['kdbeban'].isin(sel_beban)]
-            if k_sat_list and 'kdsatker' in d.columns:
-                d = d[d['kdsatker'].isin(k_sat_list)]
-            if sel_skmpnen and 'kdskmpnen' in d.columns:
-                k_vals = [s.split(" - ")[0] for s in sel_skmpnen]
-                d = d[d['kdskmpnen'].isin(k_vals)]
-            if sel_dirbag and 'kddirbag' in d.columns:
-                untagged_selected = 'UNTAGGED - Belum Tertandai' in sel_dirbag
-                tagged_codes = [s.split(" - ")[0] for s in sel_dirbag if s != 'UNTAGGED - Belum Tertandai']
-                mask = pd.Series(False, index=d.index)
-                if tagged_codes:
-                    mask |= d['kddirbag'].isin(tagged_codes)
-                if untagged_selected:
-                    mask |= ~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')
-                d = d[mask]
-            if sel_ro and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
-                ro_keys = []
-                for s in sel_ro:
-                    parts = s.split(" - ")[0].split(".")
-                    if len(parts) == 4:
-                        ro_keys.append(tuple(parts))
-                if ro_keys:
-                    ro_series = (
-                        d['kdprogram'].astype(str) + '|' + d['kdgiat'].astype(str) + '|' +
-                        d['kdoutput'].astype(str) + '|' + d['kdsoutput'].astype(str)
-                    )
-                    valid_keys = ['|'.join(t) for t in ro_keys]
-                    d = d[ro_series.isin(valid_keys)]
-            if sel_akun and 'kdakun' in d.columns:
-                d = d[d['kdakun'].isin(sel_akun)]
-            return d
-
-        compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
-        compare_df = _apply_dashboard_filters(compare_df)
-        if 'jumlah' in compare_df.columns:
-            compare_df['jumlah'] = pd.to_numeric(compare_df['jumlah'], errors='coerce').fillna(0)
-
-        group_cols = ['kdsatker', 'nmsatker']
-        if show_dirbag and 'satdirbag' in compare_df.columns:
-            group_cols.append('satdirbag')
 
         if compare_df.empty or 'jumlah' not in compare_df.columns or not all(c in compare_df.columns for c in group_cols):
             st.info("No data based on the current filters.")
@@ -1304,8 +1313,6 @@ with tab_dashboard:
             )
 
         st.write("---")
-        
-        
         
         # --- Charts ---
         if f_df.empty:
