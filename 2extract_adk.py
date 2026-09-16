@@ -1139,89 +1139,6 @@ with tab_dashboard:
 
         st.write("---")
 
-        # --- Ringkasan Pagu Semula vs Menjadi per Satker ---
-        st.subheader("Ringkasan Pagu Semula vs Menjadi per Satker")
-
-        def _apply_dashboard_filters(df):
-            d = df.copy()
-            if sel_thang and 'thang' in d.columns:
-                d = d[d['thang'].isin(sel_thang)]
-            if sel_beban and 'kdbeban' in d.columns:
-                d = d[d['kdbeban'].isin(sel_beban)]
-            if k_sat_list and 'kdsatker' in d.columns:
-                d = d[d['kdsatker'].isin(k_sat_list)]
-            if sel_skmpnen and 'kdskmpnen' in d.columns:
-                k_vals = [s.split(" - ")[0] for s in sel_skmpnen]
-                d = d[d['kdskmpnen'].isin(k_vals)]
-            if sel_dirbag and 'kddirbag' in d.columns:
-                untagged_selected = 'UNTAGGED - Belum Tertandai' in sel_dirbag
-                tagged_codes = [s.split(" - ")[0] for s in sel_dirbag if s != 'UNTAGGED - Belum Tertandai']
-                mask = pd.Series(False, index=d.index)
-                if tagged_codes:
-                    mask |= d['kddirbag'].isin(tagged_codes)
-                if untagged_selected:
-                    mask |= ~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')
-                d = d[mask]
-            if sel_ro and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
-                ro_keys = []
-                for s in sel_ro:
-                    parts = s.split(" - ")[0].split(".")
-                    if len(parts) == 4:
-                        ro_keys.append(tuple(parts))
-                if ro_keys:
-                    ro_series = (
-                        d['kdprogram'].astype(str) + '|' + d['kdgiat'].astype(str) + '|' +
-                        d['kdoutput'].astype(str) + '|' + d['kdsoutput'].astype(str)
-                    )
-                    valid_keys = ['|'.join(t) for t in ro_keys]
-                    d = d[ro_series.isin(valid_keys)]
-            if sel_akun and 'kdakun' in d.columns:
-                d = d[d['kdakun'].isin(sel_akun)]
-            return d
-
-        compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
-        compare_df = _apply_dashboard_filters(compare_df)
-        if 'jumlah' in compare_df.columns:
-            compare_df['jumlah'] = pd.to_numeric(compare_df['jumlah'], errors='coerce').fillna(0)
-
-        group_cols = ['kdsatker', 'nmsatker']
-        if show_dirbag and 'satdirbag' in compare_df.columns:
-            group_cols.append('satdirbag')
-
-        if compare_df.empty or 'jumlah' not in compare_df.columns or not all(c in compare_df.columns for c in group_cols):
-            st.info("No data based on the current filters.")
-        else:
-            pivot = (
-                compare_df.groupby(group_cols + ['source'])['jumlah']
-                .sum()
-                .unstack('source', fill_value=0)
-                .reset_index()
-            )
-            for col in ['semula', 'menjadi']:
-                if col not in pivot.columns:
-                    pivot[col] = 0
-            pivot['perubahan'] = pivot['menjadi'] - pivot['semula']
-
-            rename_map = {
-                'kdsatker': 'Kode Satker',
-                'nmsatker': 'Nama Satker',
-                'satdirbag': 'Satker/Direktorat/Bagian',
-                'semula': 'Pagu Semula',
-                'menjadi': 'Pagu Menjadi',
-                'perubahan': 'Perubahan',
-            }
-            display_cols = group_cols + ['semula', 'menjadi', 'perubahan']
-            pivot = pivot[display_cols].rename(columns=rename_map)
-
-            st.dataframe(
-                pivot.style.format(
-                    {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
-                ).pipe(apply_stripes),
-                use_container_width=True
-            )
-
-        st.write("---")
-        
         # --- Metrics ---
         st.subheader("Summary Metrics")
         m1, m2, m3 = st.columns(3)
@@ -1305,6 +1222,90 @@ with tab_dashboard:
                 st.error("Missing kdakun column.")
                 
         st.write("---")
+        # --- Ringkasan Pagu Semula vs Menjadi per Satker ---
+        st.subheader("Ringkasan Pagu Semula vs Menjadi per Satker")
+
+        def _apply_dashboard_filters(df):
+            d = df.copy()
+            if sel_thang and 'thang' in d.columns:
+                d = d[d['thang'].isin(sel_thang)]
+            if sel_beban and 'kdbeban' in d.columns:
+                d = d[d['kdbeban'].isin(sel_beban)]
+            if k_sat_list and 'kdsatker' in d.columns:
+                d = d[d['kdsatker'].isin(k_sat_list)]
+            if sel_skmpnen and 'kdskmpnen' in d.columns:
+                k_vals = [s.split(" - ")[0] for s in sel_skmpnen]
+                d = d[d['kdskmpnen'].isin(k_vals)]
+            if sel_dirbag and 'kddirbag' in d.columns:
+                untagged_selected = 'UNTAGGED - Belum Tertandai' in sel_dirbag
+                tagged_codes = [s.split(" - ")[0] for s in sel_dirbag if s != 'UNTAGGED - Belum Tertandai']
+                mask = pd.Series(False, index=d.index)
+                if tagged_codes:
+                    mask |= d['kddirbag'].isin(tagged_codes)
+                if untagged_selected:
+                    mask |= ~d['kddirbag'].astype(str).str.upper().str.startswith('PB.')
+                d = d[mask]
+            if sel_ro and all(c in d.columns for c in ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput']):
+                ro_keys = []
+                for s in sel_ro:
+                    parts = s.split(" - ")[0].split(".")
+                    if len(parts) == 4:
+                        ro_keys.append(tuple(parts))
+                if ro_keys:
+                    ro_series = (
+                        d['kdprogram'].astype(str) + '|' + d['kdgiat'].astype(str) + '|' +
+                        d['kdoutput'].astype(str) + '|' + d['kdsoutput'].astype(str)
+                    )
+                    valid_keys = ['|'.join(t) for t in ro_keys]
+                    d = d[ro_series.isin(valid_keys)]
+            if sel_akun and 'kdakun' in d.columns:
+                d = d[d['kdakun'].isin(sel_akun)]
+            return d
+
+        compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
+        compare_df = _apply_dashboard_filters(compare_df)
+        if 'jumlah' in compare_df.columns:
+            compare_df['jumlah'] = pd.to_numeric(compare_df['jumlah'], errors='coerce').fillna(0)
+
+        group_cols = ['kdsatker', 'nmsatker']
+        if show_dirbag and 'satdirbag' in compare_df.columns:
+            group_cols.append('satdirbag')
+
+        if compare_df.empty or 'jumlah' not in compare_df.columns or not all(c in compare_df.columns for c in group_cols):
+            st.info("No data based on the current filters.")
+        else:
+            pivot = (
+                compare_df.groupby(group_cols + ['source'])['jumlah']
+                .sum()
+                .unstack('source', fill_value=0)
+                .reset_index()
+            )
+            for col in ['semula', 'menjadi']:
+                if col not in pivot.columns:
+                    pivot[col] = 0
+            pivot['perubahan'] = pivot['menjadi'] - pivot['semula']
+
+            rename_map = {
+                'kdsatker': 'Kode Satker',
+                'nmsatker': 'Nama Satker',
+                'satdirbag': 'Satker/Direktorat/Bagian',
+                'semula': 'Pagu Semula',
+                'menjadi': 'Pagu Menjadi',
+                'perubahan': 'Perubahan',
+            }
+            display_cols = group_cols + ['semula', 'menjadi', 'perubahan']
+            pivot = pivot[display_cols].rename(columns=rename_map)
+
+            st.dataframe(
+                pivot.style.format(
+                    {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
+                ).pipe(apply_stripes),
+                use_container_width=True
+            )
+
+        st.write("---")
+        
+        
         
         # --- Charts ---
         if f_df.empty:
