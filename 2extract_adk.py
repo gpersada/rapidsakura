@@ -1181,8 +1181,20 @@ with tab_dashboard:
                             delta=_fmt_delta(prow['perubahan'])
                         )
                         st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
-            else:
+                        else:
                 st.error("Missing kdprogram column.")
+
+            st.markdown("**Monitoring Pagu Perjadin**")
+            PERJADIN_AKUN = ['524111', '524113', '524114', '524119', '524211']
+            if all(c in compare_df.columns for c in ['kdakun', 'source', 'jumlah']):
+                perjadin_df = compare_df[compare_df['kdakun'].astype(str).isin(PERJADIN_AKUN)]
+                pj_semula = perjadin_df[perjadin_df['source'] == 'semula']['jumlah'].sum()
+                pj_menjadi = perjadin_df[perjadin_df['source'] == 'menjadi']['jumlah'].sum()
+                pj_perubahan = pj_menjadi - pj_semula
+                st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta(pj_perubahan))
+                st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
+            else:
+                st.error("Missing kdakun column.")
                 
         st.write("---")
         
