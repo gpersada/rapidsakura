@@ -3,3 +3,4 @@ pandas
 patool
 altair
 openpyxl
+requests
