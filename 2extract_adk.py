@@ -1181,8 +1181,8 @@ with tab_dashboard:
                             delta=_fmt_delta(prow['perubahan'])
                         )
                         st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
-                else:
-                    st.error("Missing kdprogram column.")
+            else:
+                st.error("Missing kdprogram column.")
 
             st.markdown("**Monitoring Pagu Perjadin**")
             PERJADIN_AKUN = ['524111', '524113', '524114', '524119', '524211']
