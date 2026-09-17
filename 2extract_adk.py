@@ -1081,27 +1081,6 @@ def load_history_d_files(history_id):
     return data, missing
 
 
-def render_pct_badge(current, semula, label="Perubahan"):
-    """Renders a colored ▲/▼ percentage-change badge (green for kenaikan,
-    red for penurunan, gray for tidak berubah) under a Summary Metrics
-    card. Shows 'N/A' instead of dividing by zero when Pagu/Volume Semula
-    is 0."""
-    if semula == 0:
-        st.caption(f"{label}: N/A (Semula = 0)")
-        return
-    pct = (current - semula) / semula * 100
-    if pct > 0:
-        arrow, color = "▲", "#1a7f37"
-    elif pct < 0:
-        arrow, color = "▼", "#c0392b"
-    else:
-        arrow, color = "▬", "#6c757d"
-    st.markdown(
-        f"<span style='color:{color}; font-weight:600;'>{arrow} {pct:+.2f}%</span>",
-        unsafe_allow_html=True
-    )
-
-
 with tab_dashboard:
     st.header("Alokasi Ditjen Perbendaharaan")
     
@@ -1350,6 +1329,18 @@ with tab_dashboard:
         def _fmt_delta(v):
             return f"{v:+,.0f}".replace(",", ".")
 
+        def _fmt_delta_pct(current, semula):
+            """Delta text with the percentage change appended in
+            parentheses, e.g. '+1.234.567 (+12,34%)', so it renders right
+            next to the value inside st.metric's delta slot. Falls back to
+            '(N/A)' when Pagu/Volume Semula is 0 to avoid dividing by zero."""
+            diff = current - semula
+            base = _fmt_delta(diff)
+            if semula == 0:
+                return f"{base} (N/A)"
+            pct = diff / semula * 100
+            return f"{base} ({pct:+.2f}%)"
+
         if 'jumlah' in f_df.columns:
             pagu_total = f_df['jumlah'].sum()
             
@@ -1361,17 +1352,14 @@ with tab_dashboard:
                 pagu_non_op = f_df[~f_df['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
                 
             with m1:
-                st.metric("Pagu Total", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
+                st.metric("Pagu Total", _fmt_id(pagu_total), delta=_fmt_delta_pct(pagu_total, pagu_total_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_total_semula)}")
-                render_pct_badge(pagu_total, pagu_total_semula)
             with m2:
-                st.metric("Pagu Belanja Operasional", _fmt_id(pagu_op), delta=_fmt_delta(pagu_op - pagu_op_semula))
+                st.metric("Pagu Belanja Operasional", _fmt_id(pagu_op), delta=_fmt_delta_pct(pagu_op, pagu_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_op_semula)}")
-                render_pct_badge(pagu_op, pagu_op_semula)
             with m3:
-                st.metric("Pagu Belanja Nonoperasional", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
+                st.metric("Pagu Belanja Nonoperasional", _fmt_id(pagu_non_op), delta=_fmt_delta_pct(pagu_non_op, pagu_non_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_non_op_semula)}")
-                render_pct_badge(pagu_non_op, pagu_non_op_semula)
 
             st.markdown("**Pagu per Program**")
             if all(c in compare_df.columns for c in ['kdprogram', 'source', 'jumlah']):
@@ -1393,10 +1381,9 @@ with tab_dashboard:
                         st.metric(
                             f"Pagu Program {prow['kdprogram']}",
                             _fmt_id(prow['menjadi']),
-                            delta=_fmt_delta(prow['perubahan'])
+                            delta=_fmt_delta_pct(prow['menjadi'], prow['semula'])
                         )
                         st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
-                        render_pct_badge(prow['menjadi'], prow['semula'])
             else:
                 st.error("Missing kdprogram column.")
 
@@ -1407,9 +1394,8 @@ with tab_dashboard:
                 pj_semula = perjadin_df[perjadin_df['source'] == 'semula']['jumlah'].sum()
                 pj_menjadi = perjadin_df[perjadin_df['source'] == 'menjadi']['jumlah'].sum()
                 pj_perubahan = pj_menjadi - pj_semula
-                st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta(pj_perubahan))
+                st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta_pct(pj_menjadi, pj_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
-                render_pct_badge(pj_menjadi, pj_semula)
             else:
                 st.error("Missing kdakun column.")
                 
