@@ -894,7 +894,7 @@ with tab_etl:
         st.write("---")
         st.subheader("📤 Post ke Master")
         st.caption("Data di atas sudah langsung dipakai tab BI Dashboard, Office Allocation, dan Reporting & Matriks di sesi ini. Post ke Master bersifat opsional: gunakan untuk memberi nama & catatan history, serta menyimpannya secara permanen ke GitHub agar bertahan setelah app di-redeploy / dipakai sesi lain.")
-        nama_history = st.text_input("Nama History (Format YYYY-KodeHistorySAKTI, misal 2026-B00)", key="nama_history_input")
+        nama_history = st.text_input("Nama History (Format YYYY-KodeHistoryDIPA.KodeHistoryPOK(jika POK), misal 2026-B00, 2026B00.C01)", key="nama_history_input")
         catatan_history = st.text_area("Catatan History", key="catatan_history_input")
         if st.button("📤 Post ke Master", type="primary"):
             if not nama_history.strip():
