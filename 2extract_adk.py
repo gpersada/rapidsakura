@@ -722,7 +722,7 @@ with tab_etl:
                 use_container_width=True
             )
             hist_options = [
-                f"{row['nama_history']} | {row['history_id']} | ({row['waktu_posting']})"
+                f"{row['history_id']} | {row['nama_history']} ({row['waktu_posting']})"
                 for _, row in manifest_df.iloc[::-1].iterrows()
             ]
             sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
@@ -1135,7 +1135,7 @@ with tab_dashboard:
                     st.info(f"Tidak ada history dengan tahun {active_thang} yang bisa dipakai sebagai ADK Semula.")
                 else:
                     hist_options = matching_hist.apply(
-                        lambda r: f"{r['nama_history']} | {r['history_id']} | ({r['waktu_posting']})", axis=1
+                        lambda r: f"{r['history_id']} | {r['nama_history']} ({r['waktu_posting']})", axis=1
                     ).tolist()
                     sel_hist_label = st.selectbox("Pilih History sebagai ADK Semula", hist_options, key="semula_source_history")
                     selected_history_id = sel_hist_label.split(" | ")[0]
