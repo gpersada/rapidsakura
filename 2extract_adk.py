@@ -722,7 +722,7 @@ with tab_etl:
                 use_container_width=True
             )
             hist_options = [
-                f"{{row['nama_history']} | row['history_id']} | ({row['waktu_posting']})"
+                f"{row['nama_history']} | {row['history_id']} | ({row['waktu_posting']})"
                 for _, row in manifest_df.iloc[::-1].iterrows()
             ]
             sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
