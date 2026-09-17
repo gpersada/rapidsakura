@@ -722,12 +722,12 @@ with tab_etl:
                 use_container_width=True
             )
             hist_options = [
-                f"{row['history_id']} | {row['nama_history']} ({row['waktu_posting']})"
+                f"{row['nama_history']} | {row['history_id']} | {row['waktu_posting']}"
                 for _, row in manifest_df.iloc[::-1].iterrows()
             ]
             sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
             if st.button("🔄 Load History ke Master"):
-                chosen_id = sel_hist.split(" | ")[0]
+                chosen_id = sel_hist.split(" | ")[1]
                 with st.spinner("Meload history & mengirim ke GitHub..."):
                     loaded, active_label, github_ok, github_msg = load_history_to_master(chosen_id)
                 st.session_state.master_data = {
@@ -749,11 +749,11 @@ with tab_etl:
                 "Data master aktif (`adk-joined/`) tidak ikut terhapus/berubah oleh aksi ini."
             )
             confirm_delete = st.checkbox(
-                f"Saya yakin ingin menghapus history `{sel_hist.split(' | ')[0]}` secara permanen",
+                f"Saya yakin ingin menghapus history `{sel_hist.split(' | ')[1]}` secara permanen",
                 key="confirm_delete_history"
             )
             if st.button("🗑️ Hard Delete History Terpilih", disabled=not confirm_delete):
-                chosen_id_del = sel_hist.split(" | ")[0]
+                chosen_id_del = sel_hist.split(" | ")[1]
                 with st.spinner("Menghapus history & mengirim ke GitHub..."):
                     ok, github_ok, msg = delete_history(chosen_id_del)
                 if ok:
@@ -1135,10 +1135,10 @@ with tab_dashboard:
                     st.info(f"Tidak ada history dengan tahun {active_thang} yang bisa dipakai sebagai ADK Semula.")
                 else:
                     hist_options = matching_hist.apply(
-                        lambda r: f"{r['history_id']} | {r['nama_history']} ({r['waktu_posting']})", axis=1
+                        lambda r: f"{r['nama_history']} | {r['history_id']} | {r['waktu_posting']}", axis=1
                     ).tolist()
                     sel_hist_label = st.selectbox("Pilih History sebagai ADK Semula", hist_options, key="semula_source_history")
-                    selected_history_id = sel_hist_label.split(" | ")[0]
+                    selected_history_id = sel_hist_label.split(" | ")[1]
 
         # Semula (pre-revision) dataset, built for the Semula/Menjadi
         # comparison table shown below the filters, sourced according to
