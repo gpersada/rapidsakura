@@ -1058,6 +1058,50 @@ def assign_new_cols(df):
     return df
 
 
+def load_history_d_files(history_id):
+    """Loads the d_item/d_akun/d_skmpnen/d_soutput/d_cttakun files of a
+    posted history entry directly from history/{history_id}/, for use as
+    an alternate "ADK Semula" source in the BI Dashboard tab (instead of
+    the m_* files bundled with the currently active ADK).
+    Returns (data: dict[prefix, DataFrame], missing: list[str])."""
+    hist_folder = os.path.join(HISTORY_DIR, history_id)
+    prefixes = ['d_item', 'd_akun', 'd_skmpnen', 'd_soutput', 'd_cttakun']
+    data = {}
+    missing = []
+    for prefix in prefixes:
+        path = os.path.join(hist_folder, f"{prefix}.csv")
+        if os.path.exists(path):
+            df = pd.read_csv(path, sep='|', dtype=str)
+            if 'jumlah' in df.columns:
+                df['jumlah'] = pd.to_numeric(df['jumlah'], errors='coerce').fillna(0)
+            data[prefix] = df
+        else:
+            data[prefix] = pd.DataFrame()
+            missing.append(prefix)
+    return data, missing
+
+
+def render_pct_badge(current, semula, label="Perubahan"):
+    """Renders a colored ▲/▼ percentage-change badge (green for kenaikan,
+    red for penurunan, gray for tidak berubah) under a Summary Metrics
+    card. Shows 'N/A' instead of dividing by zero when Pagu/Volume Semula
+    is 0."""
+    if semula == 0:
+        st.caption(f"{label}: N/A (Semula = 0)")
+        return
+    pct = (current - semula) / semula * 100
+    if pct > 0:
+        arrow, color = "▲", "#1a7f37"
+    elif pct < 0:
+        arrow, color = "▼", "#c0392b"
+    else:
+        arrow, color = "▬", "#6c757d"
+    st.markdown(
+        f"<span style='color:{color}; font-weight:600;'>{arrow} {pct:+.2f}%</span>",
+        unsafe_allow_html=True
+    )
+
+
 with tab_dashboard:
     st.header("Alokasi Ditjen Perbendaharaan")
     
@@ -1072,9 +1116,57 @@ with tab_dashboard:
         main_df = build_joined_dataset(d_item, d_akun, d_skmpnen, d_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=d_cttakun, source_label="menjadi")
         main_df = assign_new_cols(main_df)
 
+        # --- Sumber ADK Semula ---
+        # Default: "ADK Terkini" - m_* files bundled with the currently
+        # active ADK (existing behavior). Alternative: a posted history's
+        # d_* files, restricted to histories whose nama_history shares the
+        # same 4-char tahun (thang) prefix as the active ADK - a given ADK
+        # always has exactly one thang value, so this is an exact match,
+        # not a multi-year lookup.
+        st.subheader("Sumber ADK Semula")
+        active_thang = (
+            str(d_item['thang'].dropna().iloc[0])
+            if 'thang' in d_item.columns and not d_item['thang'].dropna().empty
+            else None
+        )
+        semula_source_mode = st.radio(
+            "Pilih sumber data Pagu/Volume Semula",
+            options=["ADK Terkini", "History (d_file)"],
+            horizontal=True,
+            key="semula_source_mode"
+        )
+
+        selected_history_id = None
+        if semula_source_mode == "History (d_file)":
+            manifest_df = load_history_manifest()
+            if active_thang is None or manifest_df.empty:
+                st.info("Tidak ada history yang tersedia untuk dijadikan ADK Semula.")
+            else:
+                matching_hist = manifest_df[manifest_df['nama_history'].astype(str).str[:4] == active_thang]
+                if matching_hist.empty:
+                    st.info(f"Tidak ada history dengan tahun {active_thang} yang bisa dipakai sebagai ADK Semula.")
+                else:
+                    hist_options = matching_hist.apply(
+                        lambda r: f"{r['history_id']} | {r['nama_history']} ({r['waktu_posting']})", axis=1
+                    ).tolist()
+                    sel_hist_label = st.selectbox("Pilih History sebagai ADK Semula", hist_options, key="semula_source_history")
+                    selected_history_id = sel_hist_label.split(" | ")[0]
+
         # Semula (pre-revision) dataset, built for the Semula/Menjadi
-        # comparison table shown below the filters.
-        semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
+        # comparison table shown below the filters, sourced according to
+        # the selector above.
+        if semula_source_mode == "History (d_file)" and selected_history_id:
+            hist_data, hist_missing = load_history_d_files(selected_history_id)
+            if hist_missing:
+                st.warning(f"File tidak lengkap pada history terpilih: {', '.join(hist_missing)}. Menggunakan ADK Terkini sebagai fallback.")
+                semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
+            else:
+                semula_dash_df = build_joined_dataset(
+                    hist_data['d_item'], hist_data['d_akun'], hist_data['d_skmpnen'], hist_data['d_soutput'],
+                    ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=hist_data['d_cttakun'], source_label="semula"
+                )
+        else:
+            semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
         semula_dash_df = assign_new_cols(semula_dash_df)
 
 
@@ -1271,12 +1363,15 @@ with tab_dashboard:
             with m1:
                 st.metric("Pagu Total", _fmt_id(pagu_total), delta=_fmt_delta(pagu_total - pagu_total_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_total_semula)}")
+                render_pct_badge(pagu_total, pagu_total_semula)
             with m2:
                 st.metric("Pagu Belanja Operasional", _fmt_id(pagu_op), delta=_fmt_delta(pagu_op - pagu_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_op_semula)}")
+                render_pct_badge(pagu_op, pagu_op_semula)
             with m3:
                 st.metric("Pagu Belanja Nonoperasional", _fmt_id(pagu_non_op), delta=_fmt_delta(pagu_non_op - pagu_non_op_semula))
                 st.caption(f"Pagu Semula: {_fmt_id(pagu_non_op_semula)}")
+                render_pct_badge(pagu_non_op, pagu_non_op_semula)
 
             st.markdown("**Pagu per Program**")
             if all(c in compare_df.columns for c in ['kdprogram', 'source', 'jumlah']):
@@ -1301,6 +1396,7 @@ with tab_dashboard:
                             delta=_fmt_delta(prow['perubahan'])
                         )
                         st.caption(f"Pagu Semula: {_fmt_id(prow['semula'])}")
+                        render_pct_badge(prow['menjadi'], prow['semula'])
             else:
                 st.error("Missing kdprogram column.")
 
@@ -1313,6 +1409,7 @@ with tab_dashboard:
                 pj_perubahan = pj_menjadi - pj_semula
                 st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta(pj_perubahan))
                 st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
+                render_pct_badge(pj_menjadi, pj_semula)
             else:
                 st.error("Missing kdakun column.")
                 
