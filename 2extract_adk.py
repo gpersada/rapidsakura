@@ -26,7 +26,7 @@ import io
 import base64
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import requests
 # pyrefly: ignore [missing-import]
 import altair as alt
@@ -351,6 +351,15 @@ MASTER_DIR = "adk-joined"
 MANIFEST_PATH = os.path.join(HISTORY_DIR, "manifest.csv")
 ACTIVE_HISTORY_FILE = os.path.join(MASTER_DIR, "active_history.txt")
 
+# Server (Streamlit Cloud) runs in UTC; semua timestamp yang ditampilkan/
+# disimpan (history_id, waktu_posting, dsb.) memakai WIB (GMT+7) agar sesuai
+# waktu lokal, bukan waktu server.
+WIB = timezone(timedelta(hours=7))
+
+
+def now_wib():
+    return datetime.now(WIB)
+
 
 def _read_active_history_label():
     """Reads the persisted label of the history currently active as master
@@ -556,7 +565,7 @@ def post_to_master(master_data_dict, nama_history, catatan_history, source_filen
     recorded in the manifest so it can be shown in "Load Data History".
     Returns (history_id, github_ok, github_msg).
     """
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = now_wib().strftime('%Y%m%d_%H%M%S')
     safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', nama_history.strip()) or 'history'
     history_id = f"{timestamp}_{safe_name}"
 
@@ -583,7 +592,7 @@ def post_to_master(master_data_dict, nama_history, catatan_history, source_filen
         'history_id': history_id,
         'nama_history': nama_history.strip(),
         'catatan_history': catatan_history.strip(),
-        'waktu_posting': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'waktu_posting': now_wib().strftime('%Y-%m-%d %H:%M:%S'),
         'source_filenames': source_filenames.strip() if isinstance(source_filenames, str) else source_filenames,
     }])
     manifest = pd.concat([manifest, new_row], ignore_index=True)
@@ -713,7 +722,7 @@ with tab_etl:
                 use_container_width=True
             )
             hist_options = [
-                f"{row['history_id']} | {row['nama_history']} ({row['waktu_posting']})"
+                f"{{row['nama_history']} | row['history_id']} | ({row['waktu_posting']})"
                 for _, row in manifest_df.iloc[::-1].iterrows()
             ]
             sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
@@ -848,7 +857,7 @@ with tab_etl:
         # a perfectly good existing active-data label.
         if any(not df.empty for df in st.session_state.master_data.values()):
             st.session_state.active_history_label = (
-                f"🆕 Data ADK baru hasil upload — diproses {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"🆕 Data ADK baru hasil upload — diproses {now_wib().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             st.session_state.has_unposted_data = True
 
@@ -1126,7 +1135,7 @@ with tab_dashboard:
                     st.info(f"Tidak ada history dengan tahun {active_thang} yang bisa dipakai sebagai ADK Semula.")
                 else:
                     hist_options = matching_hist.apply(
-                        lambda r: f"{r['history_id']} | {r['nama_history']} ({r['waktu_posting']})", axis=1
+                        lambda r: f"{r['nama_history']} | {r['history_id']} | ({r['waktu_posting']})", axis=1
                     ).tolist()
                     sel_hist_label = st.selectbox("Pilih History sebagai ADK Semula", hist_options, key="semula_source_history")
                     selected_history_id = sel_hist_label.split(" | ")[0]
