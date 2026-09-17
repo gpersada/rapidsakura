@@ -1493,7 +1493,7 @@ with tab_dashboard:
         if f_df.empty:
             st.warning("No data based on the current filters.")
         else:
-            st.markdown("**Pagu per Rincian Output**")
+            st.subheader("**Pagu per Rincian Output**")
             ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdsatker', 'source', 'jumlah']
             if all(c in compare_df.columns for c in ro_cols):
                 ro_base = compare_df.copy()
