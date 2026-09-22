@@ -1434,8 +1434,8 @@ with tab_dashboard:
                     'KOMITE INVESTASI PEMERINTAH (KIP)',
                 ])
 
-                sm1, sm2, sm3 = st.columns(4)
-                sm4, sm5, sm6, sm7 = st.columns(4)
+                sm1, sm2, sm3 = st.columns(3)
+                sm4, sm5, sm6, sm7 = st.columns(3)
                 with sm1:
                     st.metric("Total Satker", total_satker)
                 with sm2:
