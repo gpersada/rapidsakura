@@ -1478,6 +1478,7 @@ with tab_dashboard:
                 mask_kppn_khusus = _contains_any(['KPPN Khusus'])
                 mask_kppn = _contains_any(['KPPN']) & ~mask_kppn_khusus
                 mask_kanwil = _contains_any(['Kanwil'])
+                mask_kanpus = _contains_any(['Kantor Pusat'])
                 mask_blu = _contains_any([
                     'BADAN PENGELOLA DANA LINGKUNGAN HIDUP (BPDLH)',
                     'PUSAT INVESTASI PEMERINTAH',
@@ -1488,8 +1489,8 @@ with tab_dashboard:
                     'KOMITE INVESTASI PEMERINTAH (KIP)',
                 ])
 
-                sm1, sm2, sm3 = st.columns(3)
-                sm4, sm5, sm6 = st.columns(3)
+                sm1, sm2, sm3, sm4 = st.columns(4)
+                sm5, sm6, sm7 = st.columns(3)
                 with sm1:
                     st.metric("Total Satker", total_satker)
                 with sm2:
@@ -1499,11 +1500,33 @@ with tab_dashboard:
                 with sm4:
                     st.metric("Jumlah Satker Kanwil", satker_unique[mask_kanwil]['kdsatker'].nunique())
                 with sm5:
-                    st.metric("Jumlah BLU", satker_unique[mask_blu]['kdsatker'].nunique())
+                    st.metric("Jumlah Satker Kanpus", satker_unique[mask_kanpus]['kdsatker'].nunique())
                 with sm6:
+                    st.metric("Jumlah BLU", satker_unique[mask_blu]['kdsatker'].nunique())
+                with sm7:
                     st.metric("Jumlah Satker Khusus", satker_unique[mask_satker_khusus]['kdsatker'].nunique())
             else:
                 st.error("Missing kdsatker/nmsatker column.")
+
+            st.markdown("**Ceklis Satker (Referensi vs ADK)**")
+            if not ref_satker.empty and 'kdsatker' in ref_satker.columns:
+                # Sengaja memakai main_df (bukan f_df) - ini pengecekan
+                # kelengkapan satker referensi terhadap seluruh ADK aktif,
+                # bukan terhadap hasil Filter Data di atas.
+                satker_in_adk = set(main_df['kdsatker'].dropna().unique()) if 'kdsatker' in main_df.columns else set()
+                nmsatker_ref_col = 'nmsatker' if 'nmsatker' in ref_satker.columns else None
+                ref_cols = ['kdsatker'] + ([nmsatker_ref_col] if nmsatker_ref_col else [])
+                ceklis_satker = ref_satker[ref_cols].dropna(subset=['kdsatker']).drop_duplicates(subset=['kdsatker']).copy()
+                ceklis_satker['Ada di ADK'] = ceklis_satker['kdsatker'].isin(satker_in_adk).map({True: '✅ Ada', False: '❌ Tidak Ada'})
+                rename_map = {'kdsatker': 'Kode Satker'}
+                if nmsatker_ref_col:
+                    rename_map[nmsatker_ref_col] = 'Nama Satker'
+                ceklis_satker = ceklis_satker.rename(columns=rename_map).sort_values(['Ada di ADK', 'Kode Satker'])
+                st.dataframe(ceklis_satker, use_container_width=True, hide_index=True)
+                missing_count = (ceklis_satker['Ada di ADK'] == '❌ Tidak Ada').sum()
+                st.caption(f"{missing_count} dari {len(ceklis_satker)} satker referensi tidak ditemukan pada ADK aktif.")
+            else:
+                st.info("Data referensi satker (ref_satker) tidak tersedia.")
                 
         st.write("---")
         
@@ -1818,40 +1841,6 @@ with tab_reporting:
         else:
             all_satker = []
             satker_dict = {}
-
-        # --- Metadata Satker ---
-        # Kategorisasi berdasarkan nmsatker (distinct per kdsatker yang
-        # muncul di data ADK aktif). Urutan pengecekan penting: KPPN Khusus
-        # dicek dan dikeluarkan dulu sebelum menghitung KPPN biasa, supaya
-        # tidak dobel hitung.
-        satker_names_upper = pd.Series(
-            [str(satker_dict.get(s, "")) for s in all_satker]
-        ).str.upper()
-
-        mask_kppn_khusus = satker_names_upper.str.contains("KPPN KHUSUS", na=False)
-        mask_kppn = satker_names_upper.str.contains("KPPN", na=False) & ~mask_kppn_khusus
-        mask_kanwil = satker_names_upper.str.contains("KANWIL", na=False)
-
-        blu_keywords = [
-            "BADAN PENGELOLA DANA LINGKUNGAN HIDUP",
-            "PUSAT INVESTASI PEMERINTAH",
-            "BADAN PENGELOLA DANA PERKEBUNAN",
-        ]
-        mask_blu = satker_names_upper.str.contains("|".join(blu_keywords), na=False)
-
-        satker_khusus_keywords = [
-            "KOMITE STANDAR AKUNTANSI PEMERINTAH",
-            "KOMITE INVESTASI PEMERINTAH",
-        ]
-        mask_satker_khusus = satker_names_upper.str.contains("|".join(satker_khusus_keywords), na=False)
-
-        meta_cols = st.columns(6)
-        meta_cols[0].metric("Total Satker", len(all_satker))
-        meta_cols[1].metric("KPPN Khusus", int(mask_kppn_khusus.sum()))
-        meta_cols[2].metric("KPPN", int(mask_kppn.sum()))
-        meta_cols[3].metric("Kanwil", int(mask_kanwil.sum()))
-        meta_cols[4].metric("BLU", int(mask_blu.sum()))
-        meta_cols[5].metric("Satker Khusus", int(mask_satker_khusus.sum()))
 
         for satker in all_satker:
             nmsatker = satker_dict.get(satker, "N/A")
