@@ -1420,6 +1420,7 @@ with tab_dashboard:
                     return mask
 
                 total_satker = satker_unique['kdsatker'].nunique()
+                mask_kanpus = _contains_any(['Kantor Pusat'])
                 mask_kppn_khusus = _contains_any(['KPPN Khusus'])
                 mask_kppn = _contains_any(['KPPN']) & ~mask_kppn_khusus
                 mask_kanwil = _contains_any(['Kanwil'])
@@ -1438,7 +1439,7 @@ with tab_dashboard:
                 with sm1:
                     st.metric("Total Satker", total_satker)
                 with sm2:
-                    st.metric("Jumlah Satker KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
+                    st.metric("Kanpus", satker_unique[mask_kanpus]['kdsatker'].nunique())
                 with sm3:
                     st.metric("Jumlah KPPN", satker_unique[mask_kppn]['kdsatker'].nunique())
                 with sm4:
@@ -1447,6 +1448,8 @@ with tab_dashboard:
                     st.metric("Jumlah BLU", satker_unique[mask_blu]['kdsatker'].nunique())
                 with sm6:
                     st.metric("Jumlah Satker Khusus", satker_unique[mask_satker_khusus]['kdsatker'].nunique())
+                with sm7:
+                    st.metric("Jumlah Satker KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
             else:
                 st.error("Missing kdsatker/nmsatker column.")
                 
