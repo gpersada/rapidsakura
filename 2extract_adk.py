@@ -441,8 +441,10 @@ def commit_to_github(commit_message, files_to_write=None, files_to_delete=None):
     commit, using the Git Data API (blob -> tree -> commit -> update ref),
     so changes survive Streamlit Cloud redeploys (which re-clone the repo).
 
-    files_to_write maps repo-relative path -> text content (blobs are
-    created and upserted into the tree). files_to_delete is a list of
+    files_to_write maps repo-relative path -> content (blobs are created
+    and upserted into the tree). Content may be a str (committed as UTF-8
+    text) or bytes/bytearray (committed as base64, e.g. for binary files
+    like the archived .rar uploads). files_to_delete is a list of
     repo-relative paths to remove from the tree (their blob sha is set to
     None, which is how the Git Data API deletes a path).
 
@@ -490,9 +492,13 @@ def commit_to_github(commit_message, files_to_write=None, files_to_delete=None):
 
         tree_items = []
         for path, content in files_to_write.items():
+            if isinstance(content, (bytes, bytearray)):
+                blob_payload = {"content": base64.b64encode(content).decode('ascii'), "encoding": "base64"}
+            else:
+                blob_payload = {"content": content, "encoding": "utf-8"}
             blob_resp = requests.post(
                 f"{base_url}/git/blobs", headers=headers,
-                json={"content": content, "encoding": "utf-8"}, timeout=30,
+                json=blob_payload, timeout=30,
             )
             blob_resp.raise_for_status()
             tree_items.append({
@@ -560,7 +566,7 @@ def load_history_manifest():
     return pd.DataFrame(columns=['history_id', 'nama_history', 'catatan_history', 'waktu_posting', 'source_filenames'])
 
 
-def post_to_master(master_data_dict, nama_history, catatan_history, source_filenames=""):
+def post_to_master(master_data_dict, nama_history, catatan_history, source_filenames="", raw_rar_files=None):
     """
     Archives the currently processed data under history/{history_id}/,
     writes it to adk-joined/ (the active master read by all other tabs),
@@ -568,6 +574,11 @@ def post_to_master(master_data_dict, nama_history, catatan_history, source_filen
     source_filenames: display string (e.g. comma-separated) of the ADK
     file names that were uploaded & processed to produce this data,
     recorded in the manifest so it can be shown in "Load Data History".
+    raw_rar_files: optional dict of {original_filename: raw_bytes} for the
+    .rar archive(s) actually uploaded by the user - archived as-is under
+    history/{history_id}/ so the original ADK can be re-downloaded later
+    (e.g. for re-processing or handing off to someone else), separate from
+    the extracted/cleaned CSVs.
     Returns (history_id, github_ok, github_msg).
     """
     timestamp = now_wib().strftime('%Y%m%d_%H%M%S')
@@ -579,6 +590,16 @@ def post_to_master(master_data_dict, nama_history, catatan_history, source_filen
     os.makedirs(MASTER_DIR, exist_ok=True)
 
     files_to_commit = {}
+
+    # Archive the original uploaded .rar file(s) as-is.
+    for rar_name, rar_bytes in (raw_rar_files or {}).items():
+        safe_rar_name = os.path.basename(rar_name)  # strip any path components
+        if not safe_rar_name:
+            continue
+        rar_path = os.path.join(hist_folder, safe_rar_name)
+        with open(rar_path, "wb") as f:
+            f.write(rar_bytes)
+        files_to_commit[rar_path] = rar_bytes
 
     for prefix, df in master_data_dict.items():
         if df is not None and not df.empty:
@@ -731,6 +752,30 @@ with tab_etl:
                 for _, row in manifest_df.iloc[::-1].iterrows()
             ]
             sel_hist = st.selectbox("Pilih History untuk di-Load", hist_options)
+
+            # --- Download ADK asli (.rar) milik history terpilih ---
+            chosen_id_preview = sel_hist.split(" | ")[1]
+            hist_folder_preview = os.path.join(HISTORY_DIR, chosen_id_preview)
+            rar_files_in_hist = []
+            if os.path.isdir(hist_folder_preview):
+                rar_files_in_hist = sorted(
+                    f for f in os.listdir(hist_folder_preview) if f.lower().endswith('.rar')
+                )
+            if rar_files_in_hist:
+                st.markdown("**📦 Download ADK Asli (.rar) History Ini**")
+                for rar_fname in rar_files_in_hist:
+                    with open(os.path.join(hist_folder_preview, rar_fname), "rb") as f:
+                        rar_bytes = f.read()
+                    st.download_button(
+                        f"📥 {rar_fname}",
+                        rar_bytes,
+                        file_name=rar_fname,
+                        mime="application/x-rar-compressed",
+                        key=f"download_rar_{chosen_id_preview}_{rar_fname}"
+                    )
+            else:
+                st.caption("Tidak ada file ADK (.rar) asli tersimpan untuk history ini.")
+
             if st.button("🔄 Load History ke Master"):
                 chosen_id = sel_hist.split(" | ")[1]
                 with st.spinner("Meload history & mengirim ke GitHub..."):
@@ -790,6 +835,10 @@ with tab_etl:
         # Remember which ADK files were uploaded for this processing run, so
         # it can be recorded in history when/if the user Posts ke Master.
         st.session_state.uploaded_filenames = [f.name for f in uploaded_files]
+        # Keep the raw .rar bytes too (not just the names), so "Post ke
+        # Master" can archive the original ADK archive under history/ for
+        # later re-download - independent of the extracted/cleaned CSVs.
+        st.session_state.uploaded_rar_bytes = {f.name: f.getvalue() for f in uploaded_files}
         with tempfile.TemporaryDirectory() as temp_dir:
             progress_bar = st.progress(0)
             for i, uploaded_file in enumerate(uploaded_files):
@@ -911,6 +960,7 @@ with tab_etl:
                         nama_history,
                         catatan_history,
                         source_filenames=", ".join(st.session_state.get('uploaded_filenames', [])),
+                        raw_rar_files=st.session_state.get('uploaded_rar_bytes', {}),
                     )
                 st.session_state.active_history_label = nama_history.strip()
                 st.session_state.has_unposted_data = False
