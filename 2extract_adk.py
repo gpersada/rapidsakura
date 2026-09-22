@@ -127,7 +127,12 @@ UNNECESSARY_D_ITEM = [
     'kdblokir', 'blokirphln', 'blokirrmp', 'blokirrkp', 'kdcopy', 'kdabt', 'kdsbu', 'volsbk', 
     'volrkakl', 'blnkontrak', 'nokontrak', 'tgkontrak', 'nilkontrak', 'januari', 'pebruari', 
     'maret', 'april', 'mei', 'juni', 'juli', 'agustus', 'september', 'oktober', 'nopember', 
-    'desember', 'jmltunda', 'kdluncuran', 'jmlabt', 'norev', 'kdubah', 'kurs', 'indexjm', 'kdib'
+    'desember', 'jmltunda', 'kdluncuran', 'jmlabt', 'norev', 'kdubah', 'kurs', 'indexjm'
+    # 'kdib' sengaja TIDAK di-drop: kolom ini dipakai sebagai merge key di
+    # build_joined_dataset() (lihat keys_soutput) karena d_soutput/d_skmpnen/
+    # d_akun bisa punya beberapa baris dengan key lain yang sama tapi kdib
+    # berbeda. Kalau di-drop dari d_item, item akan fan-out (match ke semua
+    # baris kdib sekaligus) dan menginflasi total jumlah di Summary Metrics.
 ]
 
 UNNECESSARY_M_ITEM = [
@@ -894,7 +899,7 @@ with tab_etl:
         st.write("---")
         st.subheader("📤 Post ke Master")
         st.caption("Data di atas sudah langsung dipakai tab BI Dashboard, Office Allocation, dan Reporting & Matriks di sesi ini. Post ke Master bersifat opsional: gunakan untuk memberi nama & catatan history, serta menyimpannya secara permanen ke GitHub agar bertahan setelah app di-redeploy / dipakai sesi lain.")
-        nama_history = st.text_input("Nama History (Format YYYY-KodeHistoryDIPA.KodeHistoryPOK(jika POK), misal 2026-B00, 2026B00.C01)", key="nama_history_input")
+        nama_history = st.text_input("Nama History (Format YYYY-KodeHistorySAKTI, misal 2026-B00)", key="nama_history_input")
         catatan_history = st.text_area("Catatan History", key="catatan_history_input")
         if st.button("📤 Post ke Master", type="primary"):
             if not nama_history.strip():
@@ -972,7 +977,7 @@ def load_ref_data():
 
 def build_joined_dataset(item_df, akun_df, skmpnen_df, soutput_df, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label=None):
     import pandas as pd
-    keys_soutput = ['thang', 'kdjendok', 'kdsatker', 'kddept', 'kdunit', 'kdprogram', 'kdgiat', 'kdoutput', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdsoutput']
+    keys_soutput = ['thang', 'kdjendok', 'kdsatker', 'kddept', 'kdunit', 'kdprogram', 'kdgiat', 'kdoutput', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdsoutput', 'kdib']
     common_sout = [c for c in keys_soutput if c in item_df.columns and c in soutput_df.columns]
     main_df = pd.merge(item_df, soutput_df, on=common_sout, how='left', suffixes=('', '_sout'))
     
@@ -1420,7 +1425,6 @@ with tab_dashboard:
                     return mask
 
                 total_satker = satker_unique['kdsatker'].nunique()
-                mask_kanpus = _contains_any(['Kantor Pusat'])
                 mask_kppn_khusus = _contains_any(['KPPN Khusus'])
                 mask_kppn = _contains_any(['KPPN']) & ~mask_kppn_khusus
                 mask_kanwil = _contains_any(['Kanwil'])
@@ -1439,7 +1443,7 @@ with tab_dashboard:
                 with sm1:
                     st.metric("Total Satker", total_satker)
                 with sm2:
-                    st.metric("Jumlah  KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
+                    st.metric("Jumlah Satker KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
                 with sm3:
                     st.metric("Jumlah KPPN", satker_unique[mask_kppn]['kdsatker'].nunique())
                 with sm4:
@@ -1448,7 +1452,6 @@ with tab_dashboard:
                     st.metric("Jumlah BLU", satker_unique[mask_blu]['kdsatker'].nunique())
                 with sm6:
                     st.metric("Jumlah Satker Khusus", satker_unique[mask_satker_khusus]['kdsatker'].nunique())
-                
             else:
                 st.error("Missing kdsatker/nmsatker column.")
                 
@@ -1495,7 +1498,7 @@ with tab_dashboard:
         if f_df.empty:
             st.warning("No data based on the current filters.")
         else:
-            st.subheader("**Pagu per Rincian Output**")
+            st.markdown("**Pagu per Rincian Output**")
             ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdsatker', 'source', 'jumlah']
             if all(c in compare_df.columns for c in ro_cols):
                 ro_base = compare_df.copy()
