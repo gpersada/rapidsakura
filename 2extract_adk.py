@@ -1435,11 +1435,11 @@ with tab_dashboard:
                 ])
 
                 sm1, sm2, sm3 = st.columns(3)
-                sm4, sm5, sm6, sm7 = st.columns(3)
+                sm4, sm5, sm6 = st.columns(3)
                 with sm1:
                     st.metric("Total Satker", total_satker)
                 with sm2:
-                    st.metric("Kanpus", satker_unique[mask_kanpus]['kdsatker'].nunique())
+                    st.metric("Jumlah  KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
                 with sm3:
                     st.metric("Jumlah KPPN", satker_unique[mask_kppn]['kdsatker'].nunique())
                 with sm4:
@@ -1448,8 +1448,7 @@ with tab_dashboard:
                     st.metric("Jumlah BLU", satker_unique[mask_blu]['kdsatker'].nunique())
                 with sm6:
                     st.metric("Jumlah Satker Khusus", satker_unique[mask_satker_khusus]['kdsatker'].nunique())
-                with sm7:
-                    st.metric("Jumlah  KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
+                
             else:
                 st.error("Missing kdsatker/nmsatker column.")
                 
