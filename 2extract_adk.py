@@ -1435,7 +1435,7 @@ with tab_dashboard:
                 ])
 
                 sm1, sm2, sm3 = st.columns(3)
-                sm4, sm5, sm6 = st.columns(3)
+                sm4, sm5, sm6, sm7 = st.columns(4)
                 with sm1:
                     st.metric("Total Satker", total_satker)
                 with sm2:
