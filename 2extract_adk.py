@@ -1508,25 +1508,25 @@ with tab_dashboard:
             else:
                 st.error("Missing kdsatker/nmsatker column.")
 
-            st.expander("**Ceklis Satker (Referensi vs ADK)**")
-            if not ref_satker.empty and 'kdsatker' in ref_satker.columns:
-                # Sengaja memakai main_df (bukan f_df) - ini pengecekan
-                # kelengkapan satker referensi terhadap seluruh ADK aktif,
-                # bukan terhadap hasil Filter Data di atas.
-                satker_in_adk = set(main_df['kdsatker'].dropna().unique()) if 'kdsatker' in main_df.columns else set()
-                nmsatker_ref_col = 'nmsatker' if 'nmsatker' in ref_satker.columns else None
-                ref_cols = ['kdsatker'] + ([nmsatker_ref_col] if nmsatker_ref_col else [])
-                ceklis_satker = ref_satker[ref_cols].dropna(subset=['kdsatker']).drop_duplicates(subset=['kdsatker']).copy()
-                ceklis_satker['Ada di ADK'] = ceklis_satker['kdsatker'].isin(satker_in_adk).map({True: '✅ Ada', False: '❌ Tidak Ada'})
-                rename_map = {'kdsatker': 'Kode Satker'}
-                if nmsatker_ref_col:
-                    rename_map[nmsatker_ref_col] = 'Nama Satker'
-                ceklis_satker = ceklis_satker.rename(columns=rename_map).sort_values(['Ada di ADK', 'Kode Satker'])
-                st.dataframe(ceklis_satker, use_container_width=True, hide_index=True)
-                missing_count = (ceklis_satker['Ada di ADK'] == '❌ Tidak Ada').sum()
-                st.caption(f"{missing_count} dari {len(ceklis_satker)} satker referensi tidak ditemukan pada ADK aktif.")
-            else:
-                st.info("Data referensi satker (ref_satker) tidak tersedia.")
+            with st.expander("**Ceklis Satker (Referensi vs ADK)**"):
+                if not ref_satker.empty and 'kdsatker' in ref_satker.columns:
+                    # Sengaja memakai main_df (bukan f_df) - ini pengecekan
+                    # kelengkapan satker referensi terhadap seluruh ADK aktif,
+                    # bukan terhadap hasil Filter Data di atas.
+                    satker_in_adk = set(main_df['kdsatker'].dropna().unique()) if 'kdsatker' in main_df.columns else set()
+                    nmsatker_ref_col = 'nmsatker' if 'nmsatker' in ref_satker.columns else None
+                    ref_cols = ['kdsatker'] + ([nmsatker_ref_col] if nmsatker_ref_col else [])
+                    ceklis_satker = ref_satker[ref_cols].dropna(subset=['kdsatker']).drop_duplicates(subset=['kdsatker']).copy()
+                    ceklis_satker['Ada di ADK'] = ceklis_satker['kdsatker'].isin(satker_in_adk).map({True: '✅ Ada', False: '❌ Tidak Ada'})
+                    rename_map = {'kdsatker': 'Kode Satker'}
+                    if nmsatker_ref_col:
+                        rename_map[nmsatker_ref_col] = 'Nama Satker'
+                    ceklis_satker = ceklis_satker.rename(columns=rename_map).sort_values(['Ada di ADK', 'Kode Satker'])
+                    st.dataframe(ceklis_satker, use_container_width=True, hide_index=True)
+                    missing_count = (ceklis_satker['Ada di ADK'] == '❌ Tidak Ada').sum()
+                    st.caption(f"{missing_count} dari {len(ceklis_satker)} satker referensi tidak ditemukan pada ADK aktif.")
+                else:
+                    st.info("Data referensi satker (ref_satker) tidak tersedia.")
                 
         st.write("---")
         
