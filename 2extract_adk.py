@@ -1508,7 +1508,7 @@ with tab_dashboard:
             else:
                 st.error("Missing kdsatker/nmsatker column.")
 
-            st.markdown("**Ceklis Satker (Referensi vs ADK)**")
+            st.expander("**Ceklis Satker (Referensi vs ADK)**")
             if not ref_satker.empty and 'kdsatker' in ref_satker.columns:
                 # Sengaja memakai main_df (bukan f_df) - ini pengecekan
                 # kelengkapan satker referensi terhadap seluruh ADK aktif,
