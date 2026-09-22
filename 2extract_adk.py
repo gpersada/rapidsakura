@@ -1434,7 +1434,7 @@ with tab_dashboard:
                     'KOMITE INVESTASI PEMERINTAH (KIP)',
                 ])
 
-                sm1, sm2, sm3 = st.columns(3)
+                sm1, sm2, sm3 = st.columns(4)
                 sm4, sm5, sm6, sm7 = st.columns(4)
                 with sm1:
                     st.metric("Total Satker", total_satker)
@@ -1449,7 +1449,7 @@ with tab_dashboard:
                 with sm6:
                     st.metric("Jumlah Satker Khusus", satker_unique[mask_satker_khusus]['kdsatker'].nunique())
                 with sm7:
-                    st.metric("Jumlah Satker KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
+                    st.metric("Jumlah  KPPN Khusus", satker_unique[mask_kppn_khusus]['kdsatker'].nunique())
             else:
                 st.error("Missing kdsatker/nmsatker column.")
                 
