@@ -1025,32 +1025,60 @@ def load_ref_data():
         ref_dirbag.columns = ref_dirbag.columns.str.strip().str.lower()
     return ref_satker, ref_skmpnen, ref_dirbag
 
+def _coerce_key_dtypes(left, right, keys):
+    """Casts shared merge-key columns to a consistent string dtype on
+    copies of both sides before merging (originals untouched). Needed
+    because a column that's entirely blank in one ADK file (e.g. kdib,
+    kddekon) gets auto-inferred by pandas as float64/NaN, while the same
+    column populated in the other file is object/str - pandas raises
+    ValueError on mismatched key dtypes instead of merging. Casting NaN to
+    the literal string 'nan' on both sides is fine: pandas merge still
+    treats equal keys (including NaN-derived ones) as a match, so
+    missing-key rows keep joining to each other as before."""
+    left = left.copy()
+    right = right.copy()
+    for k in keys:
+        if k in left.columns:
+            left[k] = left[k].astype(str)
+        if k in right.columns:
+            right[k] = right[k].astype(str)
+    return left, right
+
+
 def build_joined_dataset(item_df, akun_df, skmpnen_df, soutput_df, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label=None):
     import pandas as pd
     keys_soutput = ['thang', 'kdjendok', 'kdsatker', 'kddept', 'kdunit', 'kdprogram', 'kdgiat', 'kdoutput', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdsoutput', 'kdib']
     common_sout = [c for c in keys_soutput if c in item_df.columns and c in soutput_df.columns]
+    item_df, soutput_df = _coerce_key_dtypes(item_df, soutput_df, common_sout)
     main_df = pd.merge(item_df, soutput_df, on=common_sout, how='left', suffixes=('', '_sout'))
     
     keys_skmpnen = keys_soutput + ['kdkmpnen', 'kdskmpnen']
     common_skmp = [c for c in keys_skmpnen if c in main_df.columns and c in skmpnen_df.columns]
+    main_df, skmpnen_df = _coerce_key_dtypes(main_df, skmpnen_df, common_skmp)
     main_df = pd.merge(main_df, skmpnen_df, on=common_skmp, how='left', suffixes=('', '_skmp'))
     
     keys_akun = keys_skmpnen + ['kdakun']
     common_akun = [c for c in keys_akun if c in main_df.columns and c in akun_df.columns]
+    main_df, akun_df = _coerce_key_dtypes(main_df, akun_df, common_akun)
     main_df = pd.merge(main_df, akun_df, on=common_akun, how='left', suffixes=('', '_akun'))
     
     if not ref_satker.empty and 'kdsatker' in main_df.columns and 'kdsatker' in ref_satker.columns:
-        main_df = pd.merge(main_df, ref_satker, on='kdsatker', how='left', suffixes=('', '_refsat'))
+        main_df, ref_satker_c = _coerce_key_dtypes(main_df, ref_satker, ['kdsatker'])
+        main_df = pd.merge(main_df, ref_satker_c, on='kdsatker', how='left', suffixes=('', '_refsat'))
         
     if not ref_skmpnen.empty:
         possible_keys = ['kdskmpnen', 'kdsmpnen']
         ref_skmp_key = next((k for k in possible_keys if k in ref_skmpnen.columns), None)
         if 'kdskmpnen' in main_df.columns and ref_skmp_key:
-             main_df = pd.merge(main_df, ref_skmpnen, left_on='kdskmpnen', right_on=ref_skmp_key, how='left', suffixes=('', '_refskmp'))
+             main_df, ref_skmpnen_c = _coerce_key_dtypes(main_df, ref_skmpnen, [])
+             main_df['kdskmpnen'] = main_df['kdskmpnen'].astype(str)
+             ref_skmpnen_c[ref_skmp_key] = ref_skmpnen_c[ref_skmp_key].astype(str)
+             main_df = pd.merge(main_df, ref_skmpnen_c, left_on='kdskmpnen', right_on=ref_skmp_key, how='left', suffixes=('', '_refskmp'))
 
     if cttakun_df is not None:
         keys_cttakun = keys_akun + ['kdkmpnen', 'kdskmpnen', 'kdakun']
         common_cttakun = [c for c in keys_cttakun if c in main_df.columns and c in cttakun_df.columns]
+        main_df, cttakun_df = _coerce_key_dtypes(main_df, cttakun_df, common_cttakun)
         main_df = pd.merge(main_df, cttakun_df, on=common_cttakun, how='left', suffixes=('', '_cttakun'))
 
     urskmpnen_col = 'urskmpnen' if 'urskmpnen' in main_df.columns else 'urskmpnen_skmp'
@@ -1902,24 +1930,24 @@ with tab_reporting:
             row = {
                 'KODE SATKER': satker,
                 'NAMA SATKER': nmsatker,
-                'PPKNR - 52 NONOPS - SEMULA': val_ppknr_semula,
-                'PPKNR - 52 NONOPS - MENJADI': val_ppknr_menjadi,
-                'PPKNR - 52 NONOPS - SELISIH': val_ppknr_selisih,
-                'WA - 51 - SEMULA': val_wa_peg_semula,
-                'WA - 51 - MENJADI': val_wa_peg_menjadi,
-                'WA - 51 - SELISIH': val_wa_peg_selisih,
-                'WA - 52 OPS - SEMULA': val_wa_ops_semula,
-                'WA - 52 OPS - MENJADI': val_wa_ops_menjadi,
-                'WA - 52 OPS - SELISIH': val_wa_ops_selisih,
-                'WA - 52 NONOPERASIONAL - SEMULA': val_wa_nops_semula,
-                'WA - 52 NONOPERASIONAL - MENJADI': val_wa_nops_menjadi,
-                'WA - 52 NONOPERASIONAL - SELISIH': val_wa_nops_selisih,
-                'WA - 53 - SEMULA': val_wa_mod_semula,
-                'WA - 53 - MENJADI': val_wa_mod_menjadi,
-                'WA - 53 - SELISIH': val_wa_mod_selisih,
-                'WA - TOTAL WA - SEMULA': val_wa_tot_semula,
-                'WA - TOTAL WA - MENJADI': val_wa_tot_menjadi,
-                'WA - TOTAL WA': val_wa_tot_selisih,
+                'PPKNR - BELANJA BARANG NONOPERASIONAL - SEMULA': val_ppknr_semula,
+                'PPKNR - BELANJA BARANG NONOPERASIONAL - MENJADI': val_ppknr_menjadi,
+                'PPKNR - SELISIH BELANJA BARANG NONOPERASIONAL': val_ppknr_selisih,
+                'WA - BELANJA PEGAWAI - SEMULA': val_wa_peg_semula,
+                'WA - BELANJA PEGAWAI - MENJADI': val_wa_peg_menjadi,
+                'WA - SELISIH BELANJA PEGAWAI': val_wa_peg_selisih,
+                'WA - BELANJA BARANG OPERASIONAL - SEMULA': val_wa_ops_semula,
+                'WA - BELANJA BARANG OPERASIONAL - MENJADI': val_wa_ops_menjadi,
+                'WA - SELISIH BELANJA BARANG OPERASIONAL': val_wa_ops_selisih,
+                'WA - BELANJA BARANG NONOPERASIONAL - SEMULA': val_wa_nops_semula,
+                'WA - BELANJA BARANG NONOPERASIONAL - MENJADI': val_wa_nops_menjadi,
+                'WA - SELISIH BELANJA BARANG NONOPERASIONAL': val_wa_nops_selisih,
+                'WA - BELANJA MODAL - SEMULA': val_wa_mod_semula,
+                'WA - BELANJA MODAL - MENJADI': val_wa_mod_menjadi,
+                'WA - SELISIH BELANJA MODAL': val_wa_mod_selisih,
+                'WA - TOTAL DUKUNGAN MANAJEMEN - SEMULA': val_wa_tot_semula,
+                'WA - TOTAL DUKUNGAN MANAJEMEN - MENJADI': val_wa_tot_menjadi,
+                'WA - SELISIH TOTAL DUKUNGAN MANAJEMEN': val_wa_tot_selisih,
                 'TOTAL DIPA - SEMULA': val_tot_semula,
                 'TOTAL DIPA - MENJADI': val_tot_menjadi,
                 'TOTAL DIPA - SELISIH': val_tot_selisih,
