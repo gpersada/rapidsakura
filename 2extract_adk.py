@@ -1308,11 +1308,16 @@ with tab_dashboard:
         with row3_c1:
             opts_akun = sorted(main_df['kdakun'].dropna().unique().tolist()) if 'kdakun' in main_df.columns else []
             sel_akun = st.multiselect("Kode Akun (kdakun)", opts_akun)
+        with row3_c2:
+            opts_program = sorted(main_df['kdprogram'].dropna().astype(str).unique().tolist()) if 'kdprogram' in main_df.columns else []
+            sel_program = st.multiselect("Kode Program (kdprogram)", opts_program)
 
         # Apply filters
         f_df = main_df.copy()
         if sel_akun and 'kdakun' in f_df.columns:
             f_df = f_df[f_df['kdakun'].isin(sel_akun)]
+        if sel_program and 'kdprogram' in f_df.columns:
+            f_df = f_df[f_df['kdprogram'].astype(str).isin(sel_program)]
         if sel_thang:
             f_df = f_df[f_df['thang'].isin(sel_thang)]
         if sel_beban:
@@ -1386,6 +1391,8 @@ with tab_dashboard:
                     d = d[ro_series.isin(valid_keys)]
             if sel_akun and 'kdakun' in d.columns:
                 d = d[d['kdakun'].isin(sel_akun)]
+            if sel_program and 'kdprogram' in d.columns:
+                d = d[d['kdprogram'].astype(str).isin(sel_program)]
             return d
 
         compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
@@ -1414,6 +1421,12 @@ with tab_dashboard:
                 pagu_op_semula = semula_only[semula_only['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
                 # Nonoperasional = semua komponen SELAIN 001 (Pegawai) dan 002 (Barang Operasional)
                 pagu_non_op_semula = semula_only[~semula_only['kdkmpnen'].isin(['001', '002'])]['jumlah'].sum()
+
+        BLU_SATKER_KEYWORDS = [
+            'BADAN PENGELOLA DANA LINGKUNGAN HIDUP (BPDLH)',
+            'PUSAT INVESTASI PEMERINTAH',
+            'BADAN PENGELOLA DANA PERKEBUNAN (BPDP)',
+        ]
 
         def _fmt_id(v):
             return f"{v:,.0f}".replace(",", ".")
@@ -1479,17 +1492,98 @@ with tab_dashboard:
             else:
                 st.error("Missing kdprogram column.")
 
-            st.markdown("**Monitoring Pagu Perjadin**")
+            # --- Monitoring Tematik (collapsible) ---
             PERJADIN_AKUN = ['524111', '524113', '524114', '524119', '524211']
-            if all(c in compare_df.columns for c in ['kdakun', 'source', 'jumlah']):
-                perjadin_df = compare_df[compare_df['kdakun'].astype(str).isin(PERJADIN_AKUN)]
-                pj_semula = perjadin_df[perjadin_df['source'] == 'semula']['jumlah'].sum()
-                pj_menjadi = perjadin_df[perjadin_df['source'] == 'menjadi']['jumlah'].sum()
-                pj_perubahan = pj_menjadi - pj_semula
-                st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta_pct(pj_menjadi, pj_semula))
-                st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
-            else:
-                st.error("Missing kdakun column.")
+            BIROKRASI_AKUN = ['521211', '521213', '524111', '524113', '524114', '524119', '524211']
+            with st.expander("**Monitoring Tematik**", expanded=True):
+                if all(c in compare_df.columns for c in ['kdakun', 'source', 'jumlah']):
+                    def _tematik_totals(akun_list):
+                        t_df = compare_df[compare_df['kdakun'].astype(str).str.strip().isin(akun_list)]
+                        semula = t_df[t_df['source'] == 'semula']['jumlah'].sum()
+                        menjadi = t_df[t_df['source'] == 'menjadi']['jumlah'].sum()
+                        return semula, menjadi
+
+                    tm1, tm2 = st.columns(2)
+                    with tm1:
+                        st.markdown("**Monitoring Pagu Perjadin**")
+                        pj_semula, pj_menjadi = _tematik_totals(PERJADIN_AKUN)
+                        st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta_pct(pj_menjadi, pj_semula))
+                        st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
+                    with tm2:
+                        st.markdown("**Monitoring Belanja Birokrasi**")
+                        bk_semula, bk_menjadi = _tematik_totals(BIROKRASI_AKUN)
+                        st.metric("Total Pagu Belanja Birokrasi", _fmt_id(bk_menjadi), delta=_fmt_delta_pct(bk_menjadi, bk_semula))
+                        st.caption(f"Pagu Semula: {_fmt_id(bk_semula)}")
+                        st.caption("Catatan: belanja birokrasi terdiri dari akun " + ", ".join(BIROKRASI_AKUN) + ".")
+                else:
+                    st.error("Missing kdakun column.")
+
+            # --- Kontrol Pagu (collapsible) ---
+            with st.expander("**Kontrol Pagu**", expanded=False):
+                st.caption(
+                    "Angka ADK = pagu 'menjadi' seluruh satker pada ADK aktif (tidak terpengaruh Filter Data di atas). "
+                    "Selisih = ADK − Kontrol. RM = kdbeban A, BLU = kdbeban F. "
+                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005; WA Komp005 = seluruh akun pada komponen 005 di program WA."
+                )
+                kp_needed = ['kdprogram', 'kdbeban', 'kdakun', 'kdkmpnen', 'jumlah']
+                if not all(c in main_df.columns for c in kp_needed):
+                    st.error("Kolom kdprogram/kdbeban/kdakun/kdkmpnen/jumlah tidak lengkap untuk Kontrol Pagu.")
+                else:
+                    KP_COLS = [
+                        "CD 52 Nonops",
+                        "WA 51",
+                        "WA 52 Ops",
+                        "WA52 NonOps (incl. 005)",
+                        "WA Komp005",
+                        "WA 53",
+                    ]
+
+                    def _kp_adk(df):
+                        prog = df['kdprogram'].astype(str).str.strip().str.upper()
+                        akun = df['kdakun'].astype(str).str.strip()
+                        kmp = df['kdkmpnen'].astype(str).str.strip()
+                        jml = pd.to_numeric(df['jumlah'], errors='coerce').fillna(0)
+                        is_cd = prog == 'CD'
+                        is_wa = prog == 'WA'
+                        is52 = akun.str.startswith('52')
+                        ops = kmp.isin(['001', '002'])
+                        return {
+                            "CD 52 Nonops": jml[is_cd & is52 & ~ops].sum(),
+                            "WA 51": jml[is_wa & akun.str.startswith('51')].sum(),
+                            "WA 52 Ops": jml[is_wa & is52 & ops].sum(),
+                            "WA52 NonOps (incl. 005)": jml[is_wa & is52 & ~ops].sum(),
+                            "WA Komp005": jml[is_wa & (kmp == '005')].sum(),
+                            "WA 53": jml[is_wa & akun.str.startswith('53')].sum(),
+                        }
+
+                    beban_kp = main_df['kdbeban'].astype(str).str.strip().str.upper()
+                    adk_rm = _kp_adk(main_df[beban_kp == 'A'])
+                    adk_blu = _kp_adk(main_df[beban_kp == 'F'])
+
+                    lay = [1.5] + [1] * len(KP_COLS)
+                    hdr = st.columns(lay)
+                    hdr[0].markdown("**Keterangan**")
+                    for c_, name_ in zip(hdr[1:], KP_COLS):
+                        c_.markdown(f"**{name_}**")
+
+                    def _kp_row(label, key_prefix, adk_vals):
+                        cols_ = st.columns(lay)
+                        cols_[0].markdown(f"**{label}**")
+                        vals = {}
+                        for i_, (c_, name_) in enumerate(zip(cols_[1:], KP_COLS)):
+                            vals[name_] = c_.number_input(
+                                f"{label} {name_}", min_value=0, value=0, step=1,
+                                key=f"{key_prefix}_{i_}", label_visibility="collapsed"
+                            )
+                        sel_cols = st.columns(lay)
+                        sel_cols[0].markdown(f"**Selisih {label.replace('Kontrol ', '')}**")
+                        for c_, name_ in zip(sel_cols[1:], KP_COLS):
+                            diff = adk_vals[name_] - vals[name_]
+                            diff_txt = "✅ 0" if round(diff) == 0 else _fmt_delta(diff)
+                            c_.markdown(f"{diff_txt}  \n<small>ADK: {_fmt_id(adk_vals[name_])}</small>", unsafe_allow_html=True)
+
+                    _kp_row("Kontrol RM", "kp_rm", adk_rm)
+                    _kp_row("Kontrol BLU", "kp_blu", adk_blu)
 
             st.markdown("**Metadata Satker**")
             if 'kdsatker' in f_df.columns and 'nmsatker' in f_df.columns:
@@ -1507,11 +1601,7 @@ with tab_dashboard:
                 mask_kppn = _contains_any(['KPPN']) & ~mask_kppn_khusus
                 mask_kanwil = _contains_any(['Kanwil'])
                 mask_kanpus = _contains_any(['Kantor Pusat'])
-                mask_blu = _contains_any([
-                    'BADAN PENGELOLA DANA LINGKUNGAN HIDUP (BPDLH)',
-                    'PUSAT INVESTASI PEMERINTAH',
-                    'BADAN PENGELOLA DANA PERKEBUNAN (BPDP)',
-                ])
+                mask_blu = _contains_any(BLU_SATKER_KEYWORDS)
                 mask_satker_khusus = _contains_any([
                     'KOMITE STANDAR AKUNTANSI PEMERINTAH (KSAP)',
                     'KOMITE INVESTASI PEMERINTAH (KIP)',
@@ -1600,6 +1690,7 @@ with tab_dashboard:
             st.warning("No data based on the current filters.")
         else:
             st.markdown("**Pagu per Rincian Output**")
+            ro_show_satker = st.checkbox("Tampilkan detail satker", value=False, key="ro_show_satker")
             ro_cols = ['kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdsatker', 'source', 'jumlah']
             if all(c in compare_df.columns for c in ro_cols):
                 ro_base = compare_df.copy()
@@ -1609,9 +1700,19 @@ with tab_dashboard:
                     ro_base['kdoutput'].astype(str) + '.' +
                     ro_base['kdsoutput'].astype(str)
                 )
+                # Hindari baris hilang di groupby akibat NaN pada kunci
+                ro_base['ursoutput'] = ro_base['ursoutput'].fillna('N/A')
+                if 'nmsatker' in ro_base.columns:
+                    ro_base['nmsatker'] = ro_base['nmsatker'].fillna('N/A')
+                else:
+                    ro_base['nmsatker'] = 'N/A'
+
+                # Kunci agregasi: default per RO; detail = per RO + satker
+                ro_keys_grp = ['Full RO', 'ursoutput'] + (['kdsatker', 'nmsatker'] if ro_show_satker else [])
+                ro_merge_keys = ['Full RO'] + (['kdsatker'] if ro_show_satker else [])
 
                 ro_pivot = (
-                    ro_base.groupby(['Full RO', 'ursoutput', 'source'])['jumlah']
+                    ro_base.groupby(ro_keys_grp + ['source'])['jumlah']
                     .sum()
                     .unstack('source', fill_value=0)
                     .reset_index()
@@ -1623,7 +1724,9 @@ with tab_dashboard:
 
                 # volsout is repeated across every item row sharing the same
                 # RO+satker, so average per (Full RO, satker) first to collapse
-                # duplicates, then sum across satkers per Full RO.
+                # duplicates. Default view: sum across satkers per Full RO.
+                # Detail view: the per-satker average is shown as-is (jumlah
+                # per-satker sums back to the default view's totals).
                 if 'volsout' in ro_base.columns:
                     ro_base['volsout'] = pd.to_numeric(ro_base['volsout'], errors='coerce')
                     vol_per_satker = (
@@ -1631,12 +1734,20 @@ with tab_dashboard:
                         .mean()
                         .reset_index()
                     )
-                    vol_pivot = (
-                        vol_per_satker.groupby(['Full RO', 'source'])['volsout']
-                        .sum()
-                        .unstack('source', fill_value=0)
-                        .reset_index()
-                    )
+                    if ro_show_satker:
+                        vol_pivot = (
+                            vol_per_satker.groupby(['Full RO', 'kdsatker', 'source'])['volsout']
+                            .sum()
+                            .unstack('source', fill_value=0)
+                            .reset_index()
+                        )
+                    else:
+                        vol_pivot = (
+                            vol_per_satker.groupby(['Full RO', 'source'])['volsout']
+                            .sum()
+                            .unstack('source', fill_value=0)
+                            .reset_index()
+                        )
                     for col in ['semula', 'menjadi']:
                         if col not in vol_pivot.columns:
                             vol_pivot[col] = 0
@@ -1644,34 +1755,43 @@ with tab_dashboard:
                     vol_pivot = vol_pivot.rename(columns={
                         'semula': 'Volume Semula', 'menjadi': 'Volume Menjadi', 'perubahan_vol': 'Perubahan Volume'
                     })
-                    ro_pivot = ro_pivot.merge(vol_pivot, on='Full RO', how='left')
+                    ro_pivot = ro_pivot.merge(vol_pivot, on=ro_merge_keys, how='left')
                 else:
                     ro_pivot['Volume Semula'] = 0
                     ro_pivot['Volume Menjadi'] = 0
                     ro_pivot['Perubahan Volume'] = 0
 
-                out_df = ro_pivot[['Full RO', 'ursoutput', 'semula', 'menjadi', 'perubahan',
-                                    'Volume Semula', 'Volume Menjadi', 'Perubahan Volume']].rename(columns={
+                ro_out_cols = ['Full RO', 'ursoutput'] + (['kdsatker', 'nmsatker'] if ro_show_satker else []) + [
+                    'semula', 'menjadi', 'perubahan', 'Volume Semula', 'Volume Menjadi', 'Perubahan Volume']
+                if ro_show_satker:
+                    ro_pivot = ro_pivot.sort_values(['Full RO', 'kdsatker'])
+                out_df = ro_pivot[ro_out_cols].rename(columns={
                     'ursoutput': 'Uraian Rincian Output',
+                    'kdsatker': 'Kode Satker',
+                    'nmsatker': 'Nama Satker',
                     'semula': 'Pagu Semula',
                     'menjadi': 'Pagu Menjadi',
                     'perubahan': 'Perubahan',
                 })
+                ro_col_cfg = {
+                    "Full RO": st.column_config.Column(width="small"),
+                    "Uraian Rincian Output": st.column_config.Column(width="large"),
+                    "Pagu Semula": st.column_config.Column(width="small"),
+                    "Pagu Menjadi": st.column_config.Column(width="small"),
+                    "Perubahan": st.column_config.Column(width="small"),
+                    "Volume Semula": st.column_config.Column(width="small"),
+                    "Volume Menjadi": st.column_config.Column(width="small"),
+                    "Perubahan Volume": st.column_config.Column(width="small"),
+                }
+                if ro_show_satker:
+                    ro_col_cfg["Kode Satker"] = st.column_config.Column(width="small")
+                    ro_col_cfg["Nama Satker"] = st.column_config.Column(width="large")
                 st.dataframe(
                     out_df.style.format(
                         {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}',
                          'Volume Semula': '{:,.0f}', 'Volume Menjadi': '{:,.0f}', 'Perubahan Volume': '{:,.0f}'}
                     ).pipe(apply_stripes),
-                    column_config={
-                        "Full RO": st.column_config.Column(width="small"),
-                        "Uraian Rincian Output": st.column_config.Column(width="large"),
-                        "Pagu Semula": st.column_config.Column(width="small"),
-                        "Pagu Menjadi": st.column_config.Column(width="small"),
-                        "Perubahan": st.column_config.Column(width="small"),
-                        "Volume Semula": st.column_config.Column(width="small"),
-                        "Volume Menjadi": st.column_config.Column(width="small"),
-                        "Perubahan Volume": st.column_config.Column(width="small"),
-                    },
+                    column_config=ro_col_cfg,
                     use_container_width=True
                     )
             else:
