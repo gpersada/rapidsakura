@@ -1546,6 +1546,17 @@ with tab_dashboard:
                         st.metric("Total Pagu Belanja Birokrasi", _fmt_id(bk_menjadi), delta=_fmt_delta_pct(bk_menjadi, bk_semula))
                         st.caption(f"Pagu Semula: {_fmt_id(bk_semula)}")
                         st.caption("Catatan: belanja birokrasi terdiri dari akun " + ", ".join(BIROKRASI_AKUN) + ".")
+
+                    st.markdown("**Monitoring per Jenis Belanja**")
+                    akun2 = compare_df['kdakun'].astype(str).str.strip().str[:2]
+                    jb_cols = st.columns(3)
+                    for col_, (kode_, nama_) in zip(jb_cols, [('51', 'Belanja Pegawai'), ('52', 'Belanja Barang'), ('53', 'Belanja Modal')]):
+                        jb_df = compare_df[akun2 == kode_]
+                        jb_semula = jb_df[jb_df['source'] == 'semula']['jumlah'].sum()
+                        jb_menjadi = jb_df[jb_df['source'] == 'menjadi']['jumlah'].sum()
+                        with col_:
+                            st.metric(f"{nama_} ({kode_})", _fmt_id(jb_menjadi), delta=_fmt_delta_pct(jb_menjadi, jb_semula))
+                            st.caption(f"Pagu Semula: {_fmt_id(jb_semula)}")
                 else:
                     st.error("Missing kdakun column.")
 
