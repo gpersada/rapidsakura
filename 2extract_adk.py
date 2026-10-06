@@ -1011,6 +1011,19 @@ def load_adk_data():
             missing.append(prefix)
     return data, missing
     
+NO_PIC_LABEL = "Belum Ada PIC"
+
+
+def pic_filter_mask(series, selected):
+    """Mask baris yang PIC-nya termasuk `selected`; NO_PIC_LABEL = PIC kosong."""
+    s = series.astype(str).str.strip()
+    empty = series.isna() | s.isin(['', 'nan', 'None', '<NA>'])
+    mask = s.isin([x for x in selected if x != NO_PIC_LABEL]) & ~empty
+    if NO_PIC_LABEL in selected:
+        mask |= empty
+    return mask
+
+
 def load_ref_data():
     import os, pandas as pd
     ref_satker = pd.DataFrame()
@@ -1018,6 +1031,10 @@ def load_ref_data():
     ref_dirbag = pd.DataFrame()
     if os.path.exists("reference/ref_satker.xlsx"):
         ref_satker = pd.read_excel("reference/ref_satker.xlsx", dtype=str)
+        _pic_cols = [c for c in ref_satker.columns if str(c).strip().lower() == 'pic']
+        if _pic_cols:
+            ref_satker = ref_satker.rename(columns={_pic_cols[0]: 'pic'})
+            ref_satker['pic'] = ref_satker['pic'].astype(str).str.strip().replace({'nan': pd.NA, 'None': pd.NA, '': pd.NA})
     if os.path.exists("reference/ref_skmpnen.xlsx"):
         ref_skmpnen = pd.read_excel("reference/ref_skmpnen.xlsx", dtype=str)
     if os.path.exists("reference/ref_dirbag.xlsx"):
@@ -1311,6 +1328,16 @@ with tab_dashboard:
         with row3_c2:
             opts_program = sorted(main_df['kdprogram'].dropna().astype(str).unique().tolist()) if 'kdprogram' in main_df.columns else []
             sel_program = st.multiselect("Kode Program (kdprogram)", opts_program)
+        with row3_c3:
+            sel_pic = []
+            if 'pic' in main_df.columns:
+                pic_vals = main_df['pic'].dropna().astype(str).str.strip()
+                opts_pic = sorted(v for v in pic_vals.unique().tolist() if v not in ('', 'nan', 'None', '<NA>'))
+                if (~pic_filter_mask(main_df['pic'], opts_pic)).any():
+                    opts_pic.append(NO_PIC_LABEL)
+                sel_pic = st.multiselect("PIC", opts_pic)
+            else:
+                st.multiselect("PIC", [], disabled=True, help="Kolom 'pic' tidak ada di reference/ref_satker.xlsx.")
 
         # Apply filters
         f_df = main_df.copy()
@@ -1318,6 +1345,8 @@ with tab_dashboard:
             f_df = f_df[f_df['kdakun'].isin(sel_akun)]
         if sel_program and 'kdprogram' in f_df.columns:
             f_df = f_df[f_df['kdprogram'].astype(str).isin(sel_program)]
+        if sel_pic and 'pic' in f_df.columns:
+            f_df = f_df[pic_filter_mask(f_df['pic'], sel_pic)]
         if sel_thang:
             f_df = f_df[f_df['thang'].isin(sel_thang)]
         if sel_beban:
@@ -1393,6 +1422,8 @@ with tab_dashboard:
                 d = d[d['kdakun'].isin(sel_akun)]
             if sel_program and 'kdprogram' in d.columns:
                 d = d[d['kdprogram'].astype(str).isin(sel_program)]
+            if sel_pic and 'pic' in d.columns:
+                d = d[pic_filter_mask(d['pic'], sel_pic)]
             return d
 
         compare_df = pd.concat([main_df, semula_dash_df], ignore_index=True)
@@ -1633,12 +1664,14 @@ with tab_dashboard:
                     # bukan terhadap hasil Filter Data di atas.
                     satker_in_adk = set(main_df['kdsatker'].dropna().unique()) if 'kdsatker' in main_df.columns else set()
                     nmsatker_ref_col = 'nmsatker' if 'nmsatker' in ref_satker.columns else None
-                    ref_cols = ['kdsatker'] + ([nmsatker_ref_col] if nmsatker_ref_col else [])
+                    ref_cols = ['kdsatker'] + ([nmsatker_ref_col] if nmsatker_ref_col else []) + (['pic'] if 'pic' in ref_satker.columns else [])
                     ceklis_satker = ref_satker[ref_cols].dropna(subset=['kdsatker']).drop_duplicates(subset=['kdsatker']).copy()
                     ceklis_satker['Ada di ADK'] = ceklis_satker['kdsatker'].isin(satker_in_adk).map({True: '✅ Ada', False: '❌ Tidak Ada'})
                     rename_map = {'kdsatker': 'Kode Satker'}
                     if nmsatker_ref_col:
                         rename_map[nmsatker_ref_col] = 'Nama Satker'
+                    if 'pic' in ref_cols:
+                        rename_map['pic'] = 'PIC'
                     ceklis_satker = ceklis_satker.rename(columns=rename_map).sort_values(['Ada di ADK', 'Kode Satker'])
                     st.dataframe(ceklis_satker, use_container_width=True, hide_index=True)
                     missing_count = (ceklis_satker['Ada di ADK'] == '❌ Tidak Ada').sum()
