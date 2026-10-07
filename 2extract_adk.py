@@ -1621,7 +1621,10 @@ with tab_dashboard:
                         sel_cols[0].markdown(f"**Selisih {label.replace('Kontrol ', '')}**")
                         for c_, name_ in zip(sel_cols[1:], KP_COLS):
                             diff = adk_vals[name_] - vals[name_]
-                            diff_txt = "✅ 0" if round(diff) == 0 else _fmt_delta(diff)
+                            if round(diff) == 0:
+                                diff_txt = "✅ 0"
+                            else:
+                                diff_txt = f"<span style='color:#d62728;font-weight:600'>❌ {_fmt_delta(diff)}</span>"
                             c_.markdown(f"{diff_txt}  \n<small>ADK: {_fmt_id(adk_vals[name_])}</small>", unsafe_allow_html=True)
 
                     _kp_row("Kontrol RM", "kp_rm", adk_rm)
