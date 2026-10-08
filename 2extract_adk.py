@@ -1511,7 +1511,7 @@ with tab_dashboard:
 
         BLU_SATKER_KEYWORDS = [
             'BADAN PENGELOLA DANA LINGKUNGAN HIDUP (BPDLH)',
-            'PUSAT INVESTASI PEMERINTAH',
+            'PUSAT INVESTASI PEMERINTAH (PIP)',
             'BADAN PENGELOLA DANA PERKEBUNAN (BPDP)',
         ]
 
@@ -1761,7 +1761,7 @@ with tab_dashboard:
                 mask_kanpus = _contains_any(['Kantor Pusat'])
                 mask_blu = _contains_any(BLU_SATKER_KEYWORDS)
                 mask_satker_khusus = _contains_any([
-                    'KOMITE STANDAR AKUNTANSI PEMERINTAH (KSAP)',
+                    'KOMITE STANDAR AKUNTASI PEMERINTAH (KSAP)',
                     'KOMITE INVESTASI PEMERINTAH (KIP)',
                 ])
 
