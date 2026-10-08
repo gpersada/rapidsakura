@@ -1761,7 +1761,7 @@ with tab_dashboard:
                 mask_kanpus = _contains_any(['Kantor Pusat'])
                 mask_blu = _contains_any(BLU_SATKER_KEYWORDS)
                 mask_satker_khusus = _contains_any([
-                    'KOMITE STANDAR AKUNTASI PEMERINTAH (KSAP)',
+                    'KOMITE STANDAR AKUNTANSI PEMERINTAH (KSAP)',
                     'KOMITE INVESTASI PEMERINTAH (KIP)',
                 ])
 
