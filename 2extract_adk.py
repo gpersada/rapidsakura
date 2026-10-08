@@ -1565,8 +1565,7 @@ with tab_dashboard:
                 st.caption(
                     "Angka ADK = pagu 'menjadi' seluruh satker pada ADK aktif (tidak terpengaruh Filter Data di atas). "
                     "Selisih = ADK − Kontrol. RM = kdbeban A, BLU = kdbeban F. "
-                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005 dan hanya berlaku untuk RM (kdbeban A); "
-                    "WA Komp005 = seluruh akun pada komponen 005 di program WA."
+                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005; WA Komp005 = seluruh akun pada komponen 005 di program WA."
                 )
                 kp_needed = ['kdprogram', 'kdbeban', 'kdakun', 'kdkmpnen', 'jumlah']
                 if not all(c in main_df.columns for c in kp_needed):
@@ -1609,14 +1608,11 @@ with tab_dashboard:
                     for c_, name_ in zip(hdr[1:], KP_COLS):
                         c_.markdown(f"**{name_}**")
 
-                    def _kp_row(label, key_prefix, adk_vals, skip_cols=()):
+                    def _kp_row(label, key_prefix, adk_vals):
                         cols_ = st.columns(lay)
                         cols_[0].markdown(f"**{label}**")
                         vals = {}
                         for i_, (c_, name_) in enumerate(zip(cols_[1:], KP_COLS)):
-                            if name_ in skip_cols:
-                                c_.markdown("–")
-                                continue
                             vals[name_] = c_.number_input(
                                 f"{label} {name_}", min_value=0, value=0, step=1,
                                 key=f"{key_prefix}_{i_}", label_visibility="collapsed"
@@ -1624,9 +1620,6 @@ with tab_dashboard:
                         sel_cols = st.columns(lay)
                         sel_cols[0].markdown(f"**Selisih {label.replace('Kontrol ', '')}**")
                         for c_, name_ in zip(sel_cols[1:], KP_COLS):
-                            if name_ in skip_cols:
-                                c_.markdown("–")
-                                continue
                             diff = adk_vals[name_] - vals[name_]
                             if round(diff) == 0:
                                 diff_txt = "✅ 0"
@@ -1635,7 +1628,7 @@ with tab_dashboard:
                             c_.markdown(f"{diff_txt}  \n<small>ADK: {_fmt_id(adk_vals[name_])}</small>", unsafe_allow_html=True)
 
                     _kp_row("Kontrol RM", "kp_rm", adk_rm)
-                    _kp_row("Kontrol BLU", "kp_blu", adk_blu, skip_cols=("WA52 NonOps (incl. 005)",))
+                    _kp_row("Kontrol BLU", "kp_blu", adk_blu)
 
             st.markdown("**Metadata Satker**")
             if 'kdsatker' in f_df.columns and 'nmsatker' in f_df.columns:
