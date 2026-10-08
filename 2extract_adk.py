@@ -1225,12 +1225,22 @@ with tab_dashboard:
         )
 
         selected_history_id = None
+        semula_cross_year = False
         if semula_source_mode == "History (d_file)":
+            semula_cross_year = st.checkbox(
+                "Bandingkan dengan ADK tahun berbeda (lintas tahun)",
+                value=False,
+                key="semula_cross_year",
+                help="Jika dicentang, semua history dapat dipilih sebagai ADK Semula, termasuk yang tahunnya berbeda dari ADK aktif."
+            )
             manifest_df = load_history_manifest()
-            if active_thang is None or manifest_df.empty:
+            if manifest_df.empty or (active_thang is None and not semula_cross_year):
                 st.info("Tidak ada history yang tersedia untuk dijadikan ADK Semula.")
             else:
-                matching_hist = manifest_df[manifest_df['nama_history'].astype(str).str[:4] == active_thang]
+                if semula_cross_year:
+                    matching_hist = manifest_df
+                else:
+                    matching_hist = manifest_df[manifest_df['nama_history'].astype(str).str[:4] == active_thang]
                 if matching_hist.empty:
                     st.info(f"Tidak ada history dengan tahun {active_thang} yang bisa dipakai sebagai ADK Semula.")
                 else:
@@ -1239,7 +1249,6 @@ with tab_dashboard:
                     ).tolist()
                     sel_hist_label = st.selectbox("Pilih History sebagai ADK Semula", hist_options, key="semula_source_history")
                     selected_history_id = sel_hist_label.split(" | ")[1]
-
         # Semula (pre-revision) dataset, built for the Semula/Menjadi
         # comparison table shown below the filters, sourced according to
         # the selector above.
@@ -1256,6 +1265,15 @@ with tab_dashboard:
         else:
             semula_dash_df = build_joined_dataset(m_item, m_akun, m_skmpnen, m_soutput, ref_satker, ref_skmpnen, ref_dirbag, cttakun_df=None, source_label="semula")
         semula_dash_df = assign_new_cols(semula_dash_df)
+        if semula_cross_year and selected_history_id and 'thang' in semula_dash_df.columns:
+            _th_semula = sorted(semula_dash_df['thang'].dropna().astype(str).unique().tolist())
+            _th_menjadi = sorted(main_df['thang'].dropna().astype(str).unique().tolist()) if 'thang' in main_df.columns else []
+            if _th_semula and _th_menjadi and _th_semula != _th_menjadi:
+                st.warning(
+                    f"Perbandingan lintas tahun: Semula = TA {', '.join(_th_semula)}, Menjadi = TA {', '.join(_th_menjadi)}. "
+                    "Kode program, kegiatan, output, dan akun dibandingkan apa adanya; pastikan strukturnya sepadan antar tahun. "
+                    "Filter Tahun hanya berlaku untuk data Menjadi."
+                )
 
 
         # --- Filters ---
@@ -1388,7 +1406,10 @@ with tab_dashboard:
         def _apply_dashboard_filters(df):
             d = df.copy()
             if sel_thang and 'thang' in d.columns:
-                d = d[d['thang'].isin(sel_thang)]
+                thang_mask = d['thang'].isin(sel_thang)
+                if semula_cross_year and selected_history_id and 'source' in d.columns:
+                    thang_mask |= (d['source'] == 'semula')
+                d = d[thang_mask]
             if sel_beban and 'kdbeban' in d.columns:
                 d = d[d['kdbeban'].isin(sel_beban)]
             if k_sat_list and 'kdsatker' in d.columns:
@@ -1565,7 +1586,8 @@ with tab_dashboard:
                 st.caption(
                     "Angka ADK = pagu 'menjadi' seluruh satker pada ADK aktif (tidak terpengaruh Filter Data di atas). "
                     "Selisih = ADK − Kontrol. RM = kdbeban A, BLU = kdbeban F. "
-                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005; WA Komp005 = seluruh akun pada komponen 005 di program WA."
+                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005 dan hanya berlaku untuk RM (kdbeban A); "
+                    "WA Komp005 = seluruh akun pada komponen 005 di program WA."
                 )
                 kp_needed = ['kdprogram', 'kdbeban', 'kdakun', 'kdkmpnen', 'jumlah']
                 if not all(c in main_df.columns for c in kp_needed):
@@ -1608,11 +1630,14 @@ with tab_dashboard:
                     for c_, name_ in zip(hdr[1:], KP_COLS):
                         c_.markdown(f"**{name_}**")
 
-                    def _kp_row(label, key_prefix, adk_vals):
+                    def _kp_row(label, key_prefix, adk_vals, skip_cols=()):
                         cols_ = st.columns(lay)
                         cols_[0].markdown(f"**{label}**")
                         vals = {}
                         for i_, (c_, name_) in enumerate(zip(cols_[1:], KP_COLS)):
+                            if name_ in skip_cols:
+                                c_.markdown("–")
+                                continue
                             vals[name_] = c_.number_input(
                                 f"{label} {name_}", min_value=0, value=0, step=1,
                                 key=f"{key_prefix}_{i_}", label_visibility="collapsed"
@@ -1620,6 +1645,9 @@ with tab_dashboard:
                         sel_cols = st.columns(lay)
                         sel_cols[0].markdown(f"**Selisih {label.replace('Kontrol ', '')}**")
                         for c_, name_ in zip(sel_cols[1:], KP_COLS):
+                            if name_ in skip_cols:
+                                c_.markdown("–")
+                                continue
                             diff = adk_vals[name_] - vals[name_]
                             if round(diff) == 0:
                                 diff_txt = "✅ 0"
@@ -1628,7 +1656,7 @@ with tab_dashboard:
                             c_.markdown(f"{diff_txt}  \n<small>ADK: {_fmt_id(adk_vals[name_])}</small>", unsafe_allow_html=True)
 
                     _kp_row("Kontrol RM", "kp_rm", adk_rm)
-                    _kp_row("Kontrol BLU", "kp_blu", adk_blu)
+                    _kp_row("Kontrol BLU", "kp_blu", adk_blu, skip_cols=("WA52 NonOps (incl. 005)",))
 
             st.markdown("**Metadata Satker**")
             if 'kdsatker' in f_df.columns and 'nmsatker' in f_df.columns:
