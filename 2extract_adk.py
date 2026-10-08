@@ -22,6 +22,7 @@ import re
 import patoolib
 import tempfile
 import csv
+import json
 import io
 import base64
 import shutil
@@ -355,6 +356,8 @@ HISTORY_DIR = "history"
 MASTER_DIR = "adk-joined"
 MANIFEST_PATH = os.path.join(HISTORY_DIR, "manifest.csv")
 ACTIVE_HISTORY_FILE = os.path.join(MASTER_DIR, "active_history.txt")
+KONTROL_DIR = "kontrol"
+KONTROL_PAGU_PATH = os.path.join(KONTROL_DIR, "kontrol_pagu.json")
 
 # Server (Streamlit Cloud) runs in UTC; semua timestamp yang ditampilkan/
 # disimpan (history_id, waktu_posting, dsb.) memakai WIB (GMT+7) agar sesuai
@@ -384,6 +387,38 @@ def _write_active_history_label(label):
     os.makedirs(MASTER_DIR, exist_ok=True)
     with open(ACTIVE_HISTORY_FILE, "w", encoding="utf-8") as f:
         f.write(label)
+
+
+def load_kontrol_pagu():
+    """Membaca angka Kontrol Pagu tersimpan: {tahun: {rm: {...}, blu: {...}, updated_at}}."""
+    if os.path.exists(KONTROL_PAGU_PATH):
+        try:
+            with open(KONTROL_PAGU_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def save_kontrol_pagu(tahun, rm_vals, blu_vals):
+    """Menyimpan Kontrol Pagu satu tahun (lokal + commit GitHub). Mengembalikan
+    (github_ok, pesan). Membaca ulang berkas sebelum menulis agar perubahan
+    tahun lain / pengguna lain tidak tertimpa."""
+    store = load_kontrol_pagu()
+    store[str(tahun)] = {
+        "rm": {k: int(v) for k, v in rm_vals.items()},
+        "blu": {k: int(v) for k, v in blu_vals.items()},
+        "updated_at": now_wib().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    text = json.dumps(store, ensure_ascii=False, indent=2)
+    os.makedirs(KONTROL_DIR, exist_ok=True)
+    with open(KONTROL_PAGU_PATH, "w", encoding="utf-8") as f:
+        f.write(text)
+    return commit_to_github(
+        commit_message=f"Update kontrol pagu {tahun}",
+        files_to_write={KONTROL_PAGU_PATH: text},
+    )
 
 
 # --- Streamlit App UI ---
@@ -1555,18 +1590,40 @@ with tab_dashboard:
                         menjadi = t_df[t_df['source'] == 'menjadi']['jumlah'].sum()
                         return semula, menjadi
 
+                    def _tematik_akun_table(akun_list):
+                        rows_ = []
+                        akun_s = compare_df['kdakun'].astype(str).str.strip()
+                        for ak_ in akun_list:
+                            a_df = compare_df[akun_s == ak_]
+                            sm_ = a_df[a_df['source'] == 'semula']['jumlah'].sum()
+                            mj_ = a_df[a_df['source'] == 'menjadi']['jumlah'].sum()
+                            rows_.append({'Kode Akun': ak_, 'Pagu Semula': sm_, 'Pagu Menjadi': mj_, 'Perubahan': mj_ - sm_})
+                        return pd.DataFrame(rows_)
+
+                    def _show_akun_table(akun_list):
+                        st.dataframe(
+                            _tematik_akun_table(akun_list).style.format(
+                                {'Pagu Semula': '{:,.0f}', 'Pagu Menjadi': '{:,.0f}', 'Perubahan': '{:,.0f}'}
+                            ).pipe(apply_stripes),
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+
                     tm1, tm2 = st.columns(2)
                     with tm1:
                         st.markdown("**Monitoring Pagu Perjadin**")
                         pj_semula, pj_menjadi = _tematik_totals(PERJADIN_AKUN)
                         st.metric("Total Pagu Perjadin", _fmt_id(pj_menjadi), delta=_fmt_delta_pct(pj_menjadi, pj_semula))
                         st.caption(f"Pagu Semula: {_fmt_id(pj_semula)}")
+                        st.caption("Catatan: perjadin terdiri dari akun " + ", ".join(PERJADIN_AKUN) + ".")
+                        _show_akun_table(PERJADIN_AKUN)
                     with tm2:
                         st.markdown("**Monitoring Belanja Birokrasi**")
                         bk_semula, bk_menjadi = _tematik_totals(BIROKRASI_AKUN)
                         st.metric("Total Pagu Belanja Birokrasi", _fmt_id(bk_menjadi), delta=_fmt_delta_pct(bk_menjadi, bk_semula))
                         st.caption(f"Pagu Semula: {_fmt_id(bk_semula)}")
                         st.caption("Catatan: belanja birokrasi terdiri dari akun " + ", ".join(BIROKRASI_AKUN) + ".")
+                        _show_akun_table(BIROKRASI_AKUN)
 
                     st.markdown("**Monitoring per Jenis Belanja**")
                     akun2 = compare_df['kdakun'].astype(str).str.strip().str[:2]
@@ -1586,7 +1643,7 @@ with tab_dashboard:
                 st.caption(
                     "Angka ADK = pagu 'menjadi' seluruh satker pada ADK aktif (tidak terpengaruh Filter Data di atas). "
                     "Selisih = ADK − Kontrol. RM = kdbeban A, BLU = kdbeban F. "
-                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005 dan hanya berlaku untuk RM (kdbeban A); "
+                    "CD/WA = kdprogram; WA52 NonOps mencakup komponen 005; "
                     "WA Komp005 = seluruh akun pada komponen 005 di program WA."
                 )
                 kp_needed = ['kdprogram', 'kdbeban', 'kdakun', 'kdkmpnen', 'jumlah']
@@ -1624,13 +1681,20 @@ with tab_dashboard:
                     adk_rm = _kp_adk(main_df[beban_kp == 'A'])
                     adk_blu = _kp_adk(main_df[beban_kp == 'F'])
 
+                    kp_year = str(active_thang) if active_thang else "umum"
+                    kp_saved = load_kontrol_pagu().get(kp_year, {})
+                    st.caption(
+                        f"Angka kontrol tahun anggaran {kp_year} disimpan permanen dan dipakai bersama oleh semua pengguna. "
+                        "Ubah angka lalu klik Simpan."
+                    )
+
                     lay = [1.5] + [1] * len(KP_COLS)
                     hdr = st.columns(lay)
                     hdr[0].markdown("**Keterangan**")
                     for c_, name_ in zip(hdr[1:], KP_COLS):
                         c_.markdown(f"**{name_}**")
 
-                    def _kp_row(label, key_prefix, adk_vals, skip_cols=()):
+                    def _kp_row(label, key_prefix, adk_vals, saved_vals, skip_cols=()):
                         cols_ = st.columns(lay)
                         cols_[0].markdown(f"**{label}**")
                         vals = {}
@@ -1638,9 +1702,12 @@ with tab_dashboard:
                             if name_ in skip_cols:
                                 c_.markdown("–")
                                 continue
+                            wkey = f"{key_prefix}_{kp_year}_{i_}"
+                            if wkey not in st.session_state:
+                                st.session_state[wkey] = int(saved_vals.get(name_, 0) or 0)
                             vals[name_] = c_.number_input(
-                                f"{label} {name_}", min_value=0, value=0, step=1,
-                                key=f"{key_prefix}_{i_}", label_visibility="collapsed"
+                                f"{label} {name_}", min_value=0, step=1,
+                                key=wkey, label_visibility="collapsed"
                             )
                         sel_cols = st.columns(lay)
                         sel_cols[0].markdown(f"**Selisih {label.replace('Kontrol ', '')}**")
@@ -1654,9 +1721,27 @@ with tab_dashboard:
                             else:
                                 diff_txt = f"<span style='color:#d62728;font-weight:600'>❌ {_fmt_delta(diff)}</span>"
                             c_.markdown(f"{diff_txt}  \n<small>ADK: {_fmt_id(adk_vals[name_])}</small>", unsafe_allow_html=True)
+                        return vals
 
-                    _kp_row("Kontrol RM", "kp_rm", adk_rm)
-                    _kp_row("Kontrol BLU", "kp_blu", adk_blu, skip_cols=("WA52 NonOps (incl. 005)",))
+                    kp_rm_vals = _kp_row("Kontrol RM", "kp_rm", adk_rm, kp_saved.get('rm', {}))
+                    kp_blu_vals = _kp_row("Kontrol BLU", "kp_blu", adk_blu, kp_saved.get('blu', {}))
+
+                    saved_rm_norm = {n: int(kp_saved.get('rm', {}).get(n, 0) or 0) for n in KP_COLS}
+                    saved_blu_norm = {n: int(kp_saved.get('blu', {}).get(n, 0) or 0) for n in KP_COLS}
+                    kp_dirty = (
+                        {n: int(v) for n, v in kp_rm_vals.items()} != saved_rm_norm
+                        or {n: int(v) for n, v in kp_blu_vals.items()} != saved_blu_norm
+                    )
+                    if st.button("💾 Simpan Kontrol Pagu", key=f"kp_save_{kp_year}", disabled=not kp_dirty):
+                        gh_ok, gh_msg = save_kontrol_pagu(kp_year, kp_rm_vals, kp_blu_vals)
+                        if gh_ok:
+                            st.success("Kontrol Pagu tersimpan dan di-commit ke GitHub.")
+                        else:
+                            st.warning(f"Tersimpan lokal, tetapi commit GitHub gagal: {gh_msg}")
+                    elif kp_dirty:
+                        st.warning("Ada perubahan yang belum disimpan.")
+                    elif kp_saved.get('updated_at'):
+                        st.caption(f"Terakhir disimpan: {kp_saved['updated_at']} WIB")
 
             st.markdown("**Metadata Satker**")
             if 'kdsatker' in f_df.columns and 'nmsatker' in f_df.columns:
