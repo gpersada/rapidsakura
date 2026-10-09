@@ -2198,8 +2198,8 @@ with tab_reporting:
             val_wa_nops_selisih = val_wa_nops_menjadi - val_wa_nops_semula
             
             # WA Modal
-            semula_wa_mod = semula_s[(semula_s['kdprogram'] == 'WA') & (semula_s['kdkmpnen'] == '100') & (semula_s['kdakun'].astype(str).str.startswith('53'))]
-            menjadi_wa_mod = menjadi_s[(menjadi_s['kdprogram'] == 'WA') & (menjadi_s['kdkmpnen'] == '100') & (menjadi_s['kdakun'].astype(str).str.startswith('53'))]
+            semula_wa_mod = semula_s[(semula_s['kdprogram'] == 'WA')  & (semula_s['kdakun'].astype(str).str.startswith('53'))]
+            menjadi_wa_mod = menjadi_s[(menjadi_s['kdprogram'] == 'WA')  & (menjadi_s['kdakun'].astype(str).str.startswith('53'))]
             val_wa_mod_semula = safe_num(semula_wa_mod)
             val_wa_mod_menjadi = safe_num(menjadi_wa_mod)
             val_wa_mod_selisih = val_wa_mod_menjadi - val_wa_mod_semula
