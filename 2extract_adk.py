@@ -2110,8 +2110,8 @@ with tab_reporting:
         semula_df = assign_new_cols(semula_df)
 
 
-        d_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'ket','ket2']
-        m_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah']
+        d_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'rphblokir', 'ket','ket2']
+        m_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'rphblokir']
 
         # kdblokir/uraiblokir berasal dari d_akun/m_akun (kdblokir d_item sudah
         # di-drop saat upload). Jika kolom item masih ada, kolom akun bersuffix _akun.
