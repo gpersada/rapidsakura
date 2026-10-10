@@ -420,6 +420,8 @@ MANIFEST_PATH = os.path.join(HISTORY_DIR, "manifest.csv")
 ACTIVE_HISTORY_FILE = os.path.join(MASTER_DIR, "active_history.txt")
 KONTROL_DIR = "kontrol"
 KONTROL_PAGU_PATH = os.path.join(KONTROL_DIR, "kontrol_pagu.json")
+KONTROL_BLOKIR_PATH = os.path.join(KONTROL_DIR, "kontrol_blokir.csv")
+KONTROL_BLOKIR_META_PATH = os.path.join(KONTROL_DIR, "kontrol_blokir_meta.json")
 
 # Server (Streamlit Cloud) runs in UTC; semua timestamp yang ditampilkan/
 # disimpan (history_id, waktu_posting, dsb.) memakai WIB (GMT+7) agar sesuai
@@ -517,7 +519,409 @@ def apply_stripes(styler):
     return styler
 
 
-tab_etl, tab_dashboard, tab_office, tab_reporting = st.tabs(["ETL Process", "BI Dashboard", "Office Allocation", "Reporting & Matriks"])
+
+# =====================================================================
+# Excel dengan sheet Metadata (dipakai semua tombol download Excel)
+# =====================================================================
+def get_excel_metadata(extra=None):
+    """Metadata history ADK yang dipakai + tanggal download (WIB, tanggal saja
+    agar cache file Excel tetap stabil sepanjang hari). Mengembalikan tuple of
+    tuples (hashable) supaya bisa dipakai sebagai argumen st.cache_data."""
+    label = str(st.session_state.get('active_history_label', ''))
+    items = [
+        ('Aplikasi', 'RAPID - Budget Data Processing Platform'),
+        ('History ADK yang digunakan', label),
+    ]
+    if st.session_state.get('has_unposted_data', False):
+        items.append(('Status History', 'Belum diposting ke Master'))
+        items.append(('Nama File Sumber', ", ".join(st.session_state.get('uploaded_filenames', []))))
+    else:
+        manifest = load_history_manifest()
+        rows = manifest[manifest['nama_history'].astype(str) == label] if not manifest.empty else manifest
+        if rows.empty:
+            items.append(('Status History', 'Tidak ditemukan di manifest'))
+        else:
+            r = rows.iloc[-1]
+            items.append(('ID History', r.get('history_id', '')))
+            items.append(('Waktu Posting', r.get('waktu_posting', '')))
+            items.append(('Catatan History', r.get('catatan_history', '')))
+            items.append(('Nama File Sumber', r.get('source_filenames', '')))
+    items.append(('Tanggal Download', now_wib().strftime('%d-%m-%Y') + ' (WIB)'))
+    items.extend(extra or [])
+    return tuple((str(k), '' if pd.isna(v) else str(v)) for k, v in items)
+
+
+@st.cache_data
+def convert_df_to_excel_meta(df, meta, sheet_name='Data'):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output) as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        pd.DataFrame(list(meta), columns=['Keterangan', 'Nilai']).to_excel(writer, index=False, sheet_name='Metadata')
+        ws = writer.sheets['Metadata']
+        try:
+            if hasattr(ws, 'column_dimensions'):      # openpyxl
+                ws.column_dimensions['A'].width = 32
+                ws.column_dimensions['B'].width = 90
+            elif hasattr(ws, 'set_column'):           # xlsxwriter
+                ws.set_column(0, 0, 32)
+                ws.set_column(1, 1, 90)
+        except Exception:
+            pass
+    return output.getvalue()
+
+
+# =====================================================================
+# Cek Blokir
+# =====================================================================
+BLOKIR_AKUN_PREFIX = '524'
+BLOKIR_AKUN_EXACT = ['525115', '533111', '523111', '533121']
+
+
+def is_akun_blokir(akun_series):
+    s = akun_series.astype(str).str.strip()
+    return s.str.startswith(BLOKIR_AKUN_PREFIX) | s.isin(BLOKIR_AKUN_EXACT)
+
+
+def _cb_fmt(v):
+    return f"{v:,.0f}".replace(",", ".")
+
+
+def _norm_key(s):
+    s = s.astype('string').str.strip().str.replace(r'\.0$', '', regex=True)
+    return s
+
+
+def load_blokir_kontrol():
+    df, meta = pd.DataFrame(), {}
+    if os.path.exists(KONTROL_BLOKIR_PATH):
+        try:
+            df = pd.read_csv(KONTROL_BLOKIR_PATH, dtype=str, keep_default_na=False)
+            if 'rphblokirKontrol' in df.columns:
+                df['rphblokirKontrol'] = pd.to_numeric(df['rphblokirKontrol'], errors='coerce').fillna(0)
+        except Exception:
+            df = pd.DataFrame()
+    if os.path.exists(KONTROL_BLOKIR_META_PATH):
+        try:
+            with open(KONTROL_BLOKIR_META_PATH, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+    return df, meta
+
+
+def save_blokir_kontrol(df, filename):
+    """Menimpa Kontrol Blokir (lokal + commit GitHub). Mengembalikan (ok, pesan)."""
+    csv_text = df.to_csv(index=False)
+    meta = {
+        'filename': filename,
+        'uploaded_at': now_wib().strftime('%Y-%m-%d %H:%M:%S'),
+        'rows': int(len(df)),
+        'total': float(df['rphblokirKontrol'].sum()),
+    }
+    meta_text = json.dumps(meta, ensure_ascii=False, indent=2)
+    os.makedirs(KONTROL_DIR, exist_ok=True)
+    with open(KONTROL_BLOKIR_PATH, "w", encoding="utf-8") as f:
+        f.write(csv_text)
+    with open(KONTROL_BLOKIR_META_PATH, "w", encoding="utf-8") as f:
+        f.write(meta_text)
+    return commit_to_github(
+        commit_message=f"Update kontrol blokir ({filename})",
+        files_to_write={KONTROL_BLOKIR_PATH: csv_text, KONTROL_BLOKIR_META_PATH: meta_text},
+    )
+
+
+def parse_blokir_kontrol(uploaded):
+    """Membaca & memvalidasi Excel Kontrol Blokir. Mengembalikan (df | None, errors)."""
+    try:
+        raw = pd.read_excel(uploaded, dtype=str)
+    except Exception as e:
+        return None, [f"Gagal membaca Excel: {e}"]
+    canon = {'kdsatker': 'kdsatker', 'fullro': 'fullRO', 'akun': 'akun',
+             'rphblokirkontrol': 'rphblokirKontrol', 'kdib': 'kdib', 'kdskmpnen': 'kdskmpnen'}
+    raw = raw.rename(columns={c: canon.get(re.sub(r'[^a-z0-9]', '', str(c).lower()), c) for c in raw.columns})
+    required = ['kdsatker', 'fullRO', 'akun', 'rphblokirKontrol']
+    missing = [c for c in required if c not in raw.columns]
+    if missing:
+        return None, [f"Kolom wajib tidak ada: {', '.join(missing)}"]
+    keep = required + [c for c in ('kdib', 'kdskmpnen') if c in raw.columns]
+    df = raw[keep].dropna(how='all').copy()
+    errors = []
+    key_cols = [c for c in keep if c != 'rphblokirKontrol']
+    for c in key_cols:
+        df[c] = _norm_key(df[c])
+    df['fullRO'] = df['fullRO'].str.replace(r'\s+', '', regex=True)
+    miss_rows = df[key_cols].isna().any(axis=1) | (df[key_cols] == '').any(axis=1)
+    if miss_rows.any():
+        errors.append(f"{int(miss_rows.sum())} baris memiliki kunci kosong (baris Excel: "
+                      f"{', '.join(str(i + 2) for i in df.index[miss_rows][:10])}).")
+    bad_ro = ~df['fullRO'].fillna('').str.fullmatch(r'[^.]+(\.[^.]+){4}')
+    if (bad_ro & ~miss_rows).any():
+        sample = df.loc[bad_ro & ~miss_rows, 'fullRO'].head(5).tolist()
+        errors.append("fullRO harus 5 segmen (kdprogram.kdgiat.kdoutput.kdsoutput.kdkmpnen). Contoh tidak sesuai: "
+                      + ", ".join(sample))
+    nilai_raw = df['rphblokirKontrol'].astype('string').str.strip()
+    nilai = pd.to_numeric(nilai_raw, errors='coerce')
+    bad_num = nilai.isna() & nilai_raw.notna() & (nilai_raw != '')
+    if bad_num.any():
+        errors.append(f"{int(bad_num.sum())} nilai rphblokirKontrol non-numerik (baris Excel: "
+                      f"{', '.join(str(i + 2) for i in df.index[bad_num][:10])}).")
+    df['rphblokirKontrol'] = nilai.fillna(0).astype(float)
+    if not errors:
+        dup = df.duplicated(subset=key_cols, keep=False)
+        if dup.any():
+            errors.append(f"{int(dup.sum())} baris memiliki kunci ganda ({', '.join(key_cols)}). "
+                          "Satu kombinasi kunci harus muncul satu kali.")
+    if errors:
+        return None, errors
+    return df.reset_index(drop=True).astype({c: 'object' for c in key_cols}), []
+
+
+def compute_cek_blokir(adk_agg, ctrl_agg, key_cols, nm_map, kb_map=None):
+    """Full outer join ADK (jumlah, rphblokir) dengan kontrol; hitung selisih & status."""
+    m = adk_agg.merge(ctrl_agg, on=key_cols, how='outer')
+    for c in ('jumlah', 'rphblokir', 'rphblokirKontrol'):
+        m[c] = pd.to_numeric(m[c], errors='coerce').fillna(0)
+    if kb_map is not None:
+        m = m.merge(kb_map, on=key_cols, how='left')
+    for c in ('kdblokir', 'uraiblokir'):
+        if c not in m.columns:
+            m[c] = ''
+        m[c] = m[c].fillna('')
+    m['nmsatker'] = m['kdsatker'].map(nm_map).fillna('')
+    m['selisih'] = m['rphblokir'] - m['rphblokirKontrol']
+    m['Status'] = 'Sesuai'
+    m.loc[m['selisih'].round() != 0, 'Status'] = 'Selisih'
+    m.loc[(m['rphblokirKontrol'] == 0) & (m['rphblokir'] != 0), 'Status'] = 'Tidak ada di kontrol'
+    m.loc[(m['rphblokir'] == 0) & (m['rphblokirKontrol'] != 0), 'Status'] = 'Tidak ada blokir di ADK'
+    return m
+
+
+def render_cek_blokir(main_df):
+    _cols = [c for c in ['kdsatker', 'nmsatker', 'kdbeban', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput',
+                         'kdkmpnen', 'kdskmpnen', 'kdib', 'kdakun', 'kdblokir', 'uraiblokir',
+                         'kdblokir_akun', 'uraiblokir_akun', 'rphblokir', 'jumlah', 'pic'] if c in main_df.columns]
+    cb = main_df[_cols].copy()
+    for c in ('kdblokir', 'uraiblokir'):
+        if c not in cb.columns:
+            cb[c] = cb[f'{c}_akun'] if f'{c}_akun' in cb.columns else ''
+    req = ['kdsatker', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'kdkmpnen', 'kdakun', 'kdbeban', 'jumlah']
+    miss = [c for c in req if c not in cb.columns]
+    if miss:
+        st.error(f"Kolom tidak lengkap untuk Cek Blokir: {', '.join(miss)}")
+        return
+    for c in ('nmsatker', 'kdskmpnen', 'kdib'):
+        if c not in cb.columns:
+            cb[c] = ''
+    for c in ['kdsatker', 'nmsatker', 'kdbeban', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'kdkmpnen',
+              'kdskmpnen', 'kdib', 'kdakun', 'kdblokir', 'uraiblokir']:
+        cb[c] = cb[c].fillna('').astype(str).str.strip()
+    cb['rphblokir'] = pd.to_numeric(cb['rphblokir'], errors='coerce').fillna(0)
+    cb['jumlah'] = pd.to_numeric(cb['jumlah'], errors='coerce').fillna(0)
+    cb['Full RO'] = cb['kdprogram'] + '.' + cb['kdgiat'] + '.' + cb['kdoutput'] + '.' + cb['kdsoutput']
+    cb['fullRO'] = cb['Full RO'] + '.' + cb['kdkmpnen']
+    cb['akun_blokir'] = is_akun_blokir(cb['kdakun'])
+    nm_map = cb.drop_duplicates('kdsatker').set_index('kdsatker')['nmsatker']
+    pic_map = cb.drop_duplicates('kdsatker').set_index('kdsatker')['pic'] if 'pic' in cb.columns else None
+
+    st.caption(
+        "Data: ADK aktif (Menjadi). Akun blokir = akun berawalan 524 serta " + ", ".join(BLOKIR_AKUN_EXACT) + ". "
+        "Filter di tab ini berdiri sendiri (tidak mengikuti filter BI Dashboard)."
+    )
+
+    # ---------------- Filter ----------------
+    st.subheader("Filter Data")
+    r1 = st.columns(3)
+    sel_beban = r1[0].multiselect("Kode Beban (kdbeban)", sorted(cb['kdbeban'].unique().tolist()), key='cb_beban')
+    sel_prog = r1[1].multiselect("Kode Program (kdprogram)", sorted(cb['kdprogram'].unique().tolist()), key='cb_prog')
+    sel_ro = r1[2].multiselect("Rincian Output", sorted(cb['Full RO'].unique().tolist()), key='cb_ro')
+    r2 = st.columns(3)
+    sel_sat = r2[0].multiselect(
+        "Satker", sorted(cb['kdsatker'].unique().tolist()), key='cb_sat',
+        format_func=lambda k: f"{k} - {nm_map.get(k, '')}")
+    sel_akun = r2[1].multiselect("Kode Akun (kdakun)", sorted(cb['kdakun'].unique().tolist()), key='cb_akun')
+    if pic_map is not None:
+        pic_vals = sorted(v for v in pic_map.dropna().astype(str).str.strip().unique().tolist()
+                          if v not in ('', 'nan', 'None', '<NA>'))
+        if (~pic_filter_mask(pic_map, pic_vals)).any():
+            pic_vals.append(NO_PIC_LABEL)
+        sel_pic = r2[2].multiselect("PIC", pic_vals, key='cb_pic')
+    else:
+        sel_pic = []
+        r2[2].multiselect("PIC", [], disabled=True, key='cb_pic', help="Kolom 'pic' tidak tersedia.")
+    sel_jenis = st.multiselect("Jenis Akun", ["Akun Blokir", "Akun Non Blokir"], key='cb_jenis')
+
+    def _flt(d, with_jenis=True):
+        if sel_beban and 'kdbeban' in d.columns:
+            d = d[d['kdbeban'].isin(sel_beban)]
+        if sel_prog and 'kdprogram' in d.columns:
+            d = d[d['kdprogram'].isin(sel_prog)]
+        if sel_ro and 'Full RO' in d.columns:
+            d = d[d['Full RO'].isin(sel_ro)]
+        if sel_sat and 'kdsatker' in d.columns:
+            d = d[d['kdsatker'].isin(sel_sat)]
+        if sel_akun and 'kdakun' in d.columns:
+            d = d[d['kdakun'].isin(sel_akun)]
+        if sel_pic and 'pic' in d.columns:
+            d = d[pic_filter_mask(d['pic'], sel_pic)]
+        if with_jenis and len(sel_jenis) == 1 and 'akun_blokir' in d.columns:
+            d = d[d['akun_blokir'] == (sel_jenis[0] == "Akun Blokir")]
+        return d
+
+    cb_noj = _flt(cb, with_jenis=False)
+    cb_f = _flt(cb)
+
+    filter_parts = []
+    for lbl, vals in (("kdbeban", sel_beban), ("kdprogram", sel_prog), ("RO", sel_ro), ("Satker", sel_sat),
+                      ("Akun", sel_akun), ("PIC", sel_pic), ("Jenis Akun", sel_jenis)):
+        if vals:
+            filter_parts.append(f"{lbl}: {', '.join(map(str, vals))}")
+    filter_text = "; ".join(filter_parts) if filter_parts else "Tanpa filter"
+
+    # ---------------- Monitoring ----------------
+    st.subheader("Monitoring Blokir")
+    tot_blokir, tot_pagu = cb_f['rphblokir'].sum(), cb_f['jumlah'].sum()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Blokir ES1 (Total rphblokir)", _cb_fmt(tot_blokir))
+    m2.metric("Total Pagu (jumlah)", _cb_fmt(tot_pagu))
+    m3.metric("% Blokir terhadap Pagu", f"{(tot_blokir / tot_pagu * 100) if tot_pagu else 0:.2f}%")
+
+    st.markdown("**Blokir per Sumber Dana (kdbeban)**")
+    by_beban = cb_f.groupby('kdbeban', as_index=False).agg(Pagu=('jumlah', 'sum'), Blokir=('rphblokir', 'sum'))
+    by_beban['% Blokir'] = (by_beban['Blokir'] / by_beban['Pagu'] * 100).where(by_beban['Pagu'] != 0, 0.0)
+    st.dataframe(by_beban.rename(columns={'kdbeban': 'Kode Beban'}).style.format(
+        {'Pagu': '{:,.0f}', 'Blokir': '{:,.0f}', '% Blokir': '{:.2f}'}), hide_index=True, use_container_width=True)
+
+    st.markdown("**Rincian Blokir per Akun**")
+    by_akun = (cb_f[cb_f['rphblokir'] != 0].groupby('kdakun', as_index=False)
+               .agg(**{'Jumlah Satker': ('kdsatker', 'nunique'), 'Blokir': ('rphblokir', 'sum')})
+               .sort_values('Blokir', ascending=False))
+    by_akun['Keterangan'] = by_akun['kdakun'].map(
+        lambda a: 'Akun blokir' if is_akun_blokir(pd.Series([a])).iloc[0] else 'Di luar daftar akun blokir')
+    if by_akun.empty:
+        st.info("Tidak ada rphblokir pada data terfilter.")
+    else:
+        st.dataframe(by_akun.rename(columns={'kdakun': 'Kode Akun'}).style.format({'Blokir': '{:,.0f}'}),
+                     hide_index=True, use_container_width=True)
+
+    out_akun = cb_noj[(cb_noj['rphblokir'] != 0) & (~cb_noj['akun_blokir'])]
+    if not out_akun.empty:
+        st.warning(
+            f"⚠️ Terdapat blokir (rphblokir) pada akun di luar daftar akun blokir: "
+            f"{', '.join(sorted(out_akun['kdakun'].unique()))}. Total {_cb_fmt(out_akun['rphblokir'].sum())}."
+        )
+        det = (out_akun.groupby(['kdakun', 'kdsatker'], as_index=False).agg(Blokir=('rphblokir', 'sum'))
+               .assign(Satker=lambda d: d['kdsatker'].map(nm_map).fillna(''))
+               .rename(columns={'kdakun': 'Kode Akun', 'kdsatker': 'Kode Satker'})
+               [['Kode Akun', 'Kode Satker', 'Satker', 'Blokir']])
+        st.dataframe(det.style.format({'Blokir': '{:,.0f}'}), hide_index=True, use_container_width=True)
+    else:
+        st.success("Tidak ada blokir di luar daftar akun blokir.")
+
+    # ---------------- Upload kontrol ----------------
+    st.subheader("Upload Kontrol Blokir")
+    ctrl_df, ctrl_meta = load_blokir_kontrol()
+    if ctrl_meta:
+        st.caption(f"Kontrol aktif: **{ctrl_meta.get('filename', '-')}** · diunggah {ctrl_meta.get('uploaded_at', '-')} WIB · "
+                   f"{ctrl_meta.get('rows', 0)} baris · total {_cb_fmt(ctrl_meta.get('total', 0))}")
+    else:
+        st.info("Belum ada Kontrol Blokir tersimpan.")
+    up = st.file_uploader(
+        "Excel kontrol (kolom wajib: kdsatker, fullRO, akun, rphblokirKontrol; opsional: kdib, kdskmpnen)",
+        type=['xlsx', 'xls'], key='cb_upload')
+    if up is not None:
+        parsed, errs = parse_blokir_kontrol(up)
+        if errs:
+            for e in errs:
+                st.error(e)
+        else:
+            st.success(f"File valid: {len(parsed)} baris, total {_cb_fmt(parsed['rphblokirKontrol'].sum())}.")
+            st.dataframe(parsed.head(10), hide_index=True, use_container_width=True)
+            if st.button("💾 Simpan sebagai Kontrol Blokir (menimpa yang lama)", key='cb_save'):
+                ok, msg = save_blokir_kontrol(parsed, up.name)
+                if ok:
+                    st.success("Kontrol Blokir tersimpan dan di-commit ke GitHub.")
+                else:
+                    st.warning(f"Tersimpan lokal, tetapi commit GitHub gagal: {msg}")
+                ctrl_df, ctrl_meta = load_blokir_kontrol()
+
+    # ---------------- Cek per Satker ----------------
+    st.subheader("Cek per Satker")
+    if ctrl_df.empty:
+        st.info("Simpan Kontrol Blokir terlebih dahulu untuk menampilkan hasil pengecekan.")
+        return
+    opt_keys = [c for c in ('kdib', 'kdskmpnen') if c in ctrl_df.columns]
+    key_cols = ['kdsatker', 'fullRO'] + opt_keys + ['akun']
+    if not opt_keys:
+        st.caption("File kontrol tidak memuat kdib/kdskmpnen, sehingga perbandingan dilakukan per kdsatker + fullRO + akun.")
+    st.caption("Filter kdbeban hanya memengaruhi sisi ADK (file kontrol tidak memuat kdbeban). "
+               "Kolom SBK akan terisi setelah referensi RO SBK tersedia.")
+
+    adk = cb_f.rename(columns={'kdakun': 'akun'})
+    adk_agg = adk.groupby(key_cols, as_index=False).agg(jumlah=('jumlah', 'sum'), rphblokir=('rphblokir', 'sum'))
+    kb = adk[key_cols + ['kdblokir', 'uraiblokir']].drop_duplicates()
+    kb = kb[(kb['kdblokir'] != '') | (kb['uraiblokir'] != '')]
+    kb_map = kb.groupby(key_cols, as_index=False).agg(
+        kdblokir=('kdblokir', lambda s: ', '.join(sorted({x for x in s if x}))),
+        uraiblokir=('uraiblokir', lambda s: ', '.join(sorted({x for x in s if x}))))
+
+    ctrl = ctrl_df.copy()
+    ctrl['kdakun'] = ctrl['akun']
+    ctrl['kdprogram'] = ctrl['fullRO'].str.split('.').str[0]
+    ctrl['Full RO'] = ctrl['fullRO'].str.rsplit('.', n=1).str[0]
+    ctrl['akun_blokir'] = is_akun_blokir(ctrl['kdakun'])
+    if pic_map is not None:
+        ctrl['pic'] = ctrl['kdsatker'].map(pic_map)
+    ctrl = _flt(ctrl)
+    ctrl_agg = ctrl[key_cols + ['rphblokirKontrol']]
+
+    res = compute_cek_blokir(adk_agg, ctrl_agg, key_cols, nm_map, kb_map)
+
+    o1, o2 = st.columns(2)
+    show_all = o1.checkbox("Tampilkan semua baris (termasuk rphblokir dan kontrol = 0)", value=False, key='cb_show_all')
+    only_diff = o2.checkbox("Hanya tampilkan yang selisih", value=False, key='cb_only_diff')
+    if not show_all:
+        res = res[(res['rphblokir'] != 0) | (res['rphblokirKontrol'] != 0)]
+    if only_diff:
+        res = res[res['selisih'].round() != 0]
+    res = res.sort_values(['kdsatker', 'fullRO'] + opt_keys + ['akun'])
+    res['SBK'] = ''
+
+    disp_cols = (['kdsatker', 'nmsatker', 'fullRO'] + [c for c in ('kdskmpnen', 'kdib') if c in opt_keys] +
+                 ['SBK', 'akun', 'kdblokir', 'uraiblokir', 'jumlah', 'rphblokir', 'rphblokirKontrol', 'selisih', 'Status'])
+    out = res[disp_cols].reset_index(drop=True)
+
+    s1, s2, s3, s4, s5 = st.columns(5)
+    s1.metric("Jumlah Baris", f"{len(out):,}".replace(",", "."))
+    s2.metric("Total rphblokir", _cb_fmt(out['rphblokir'].sum()))
+    s3.metric("Total Kontrol", _cb_fmt(out['rphblokirKontrol'].sum()))
+    s4.metric("Total Selisih", _cb_fmt(out['selisih'].sum()))
+    s5.metric("Baris Selisih ≠ 0", f"{int((out['selisih'].round() != 0).sum()):,}".replace(",", "."))
+
+    num_fmt = {'jumlah': '{:,.0f}', 'rphblokir': '{:,.0f}', 'rphblokirKontrol': '{:,.0f}', 'selisih': '{:,.0f}'}
+    if out.size <= 200000:
+        sty = out.style.format(num_fmt)
+        _map = getattr(sty, 'map', None) or sty.applymap
+        sty = _map(lambda v: 'color:#d62728;font-weight:600' if round(v) != 0 else '', subset=['selisih'])
+        st.dataframe(sty, hide_index=True, use_container_width=True)
+    else:
+        st.caption("Tabel besar ditampilkan tanpa pewarnaan; gunakan unduhan Excel untuk data lengkap.")
+        st.dataframe(out, hide_index=True, use_container_width=True)
+
+    extra = (
+        ('Filter Aktif', filter_text),
+        ('File Kontrol Blokir', ctrl_meta.get('filename', '-')),
+        ('Waktu Upload Kontrol Blokir', f"{ctrl_meta.get('uploaded_at', '-')} WIB"),
+        ('Rumus Selisih', 'rphblokir ADK - rphblokirKontrol'),
+    )
+    st.download_button(
+        label="📥 Download Hasil Cek Blokir (Excel)",
+        data=convert_df_to_excel_meta(out, get_excel_metadata(extra), 'Cek_Blokir'),
+        file_name='cek_blokir_per_satker.xlsx',
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
+tab_etl, tab_dashboard, tab_office, tab_reporting, tab_cek = st.tabs(["ETL Process", "BI Dashboard", "Office Allocation", "Reporting & Matriks", "Cek Blokir"])
 
 
 def _github_config():
@@ -2172,8 +2576,8 @@ with tab_reporting:
         semula_df = assign_new_cols(semula_df)
 
 
-        d_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'ket','ket2']
-        m_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah']
+        d_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'rphblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'ket','ket2']
+        m_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'rphblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah']
 
         # kdblokir/uraiblokir berasal dari d_akun/m_akun (kdblokir d_item sudah
         # di-drop saat upload). Jika kolom item masih ada, kolom akun bersuffix _akun.
@@ -2192,19 +2596,18 @@ with tab_reporting:
         raw_adk_joined = pd.concat([raw_semula, raw_menjadi], ignore_index=True)
         if 'jumlah' in raw_adk_joined.columns:
             raw_adk_joined['jumlah'] = pd.to_numeric(raw_adk_joined['jumlah'], errors='coerce').fillna(0)
+        if 'rphblokir' in raw_adk_joined.columns:
+            raw_adk_joined['rphblokir'] = pd.to_numeric(raw_adk_joined['rphblokir'], errors='coerce').fillna(0)
             
         st.subheader("Raw Data ADK Joined")
         st.dataframe(pd.concat([raw_adk_joined.head(), raw_adk_joined.tail()]))
         
         # Export Raw Data to Excel (using BytesIO)
-        @st.cache_data
-        def convert_df_to_excel(df):
-            output = io.BytesIO()
-            # Removed engine='xlsxwriter' to let pandas fallback to default (openpyxl)
-            with pd.ExcelWriter(output) as writer:
-                df.to_excel(writer, index=False, sheet_name='Raw_ADK')
-            return output.getvalue()
-        
+        _rep_meta_extra = (('Keterangan Data', 'Semula = m_* dan Menjadi = d_* pada ADK aktif'),)
+
+        def convert_df_to_excel(df, sheet_name='Raw_ADK'):
+            return convert_df_to_excel_meta(df, get_excel_metadata(_rep_meta_extra), sheet_name)
+
         st.write("---")
         st.subheader("Matriks Semula Menjadi")
         
@@ -2279,28 +2682,27 @@ with tab_reporting:
             row = {
                 'KODE SATKER': satker,
                 'NAMA SATKER': nmsatker,
-                'PPKNR - 52 NONOP - SEMULA': val_ppknr_semula,
-                'PPKNR - 52 NONOP - MENJADI': val_ppknr_menjadi,
-                'PPKNR - SELISIH 52 NONOP': val_ppknr_selisih,
-                'WA - 51 - SEMULA': val_wa_peg_semula,
-                'WA - 51 - MENJADI': val_wa_peg_menjadi,
-                'WA - SELISIH 51': val_wa_peg_selisih,
-                'WA - 52 OPS - SEMULA': val_wa_ops_semula,
-                'WA - B52 OPS - MENJADI': val_wa_ops_menjadi,
-                'WA - SELISIH 52 OPS': val_wa_ops_selisih,
-                'WA - 52 NONOP - SEMULA': val_wa_nops_semula,
-                'WA - 52 NONOP - MENJADI': val_wa_nops_menjadi,
-                'WA - SELISIH 52 NONOP': val_wa_nops_selisih,
-                'WA - 53 - SEMULA': val_wa_mod_semula,
-                'WA - 53 - MENJADI': val_wa_mod_menjadi,
-                'WA - SELISIH 53': val_wa_mod_selisih,
+                'PPKNR - BELANJA BARANG NONOPERASIONAL - SEMULA': val_ppknr_semula,
+                'PPKNR - BELANJA BARANG NONOPERASIONAL - MENJADI': val_ppknr_menjadi,
+                'PPKNR - SELISIH BELANJA BARANG NONOPERASIONAL': val_ppknr_selisih,
+                'WA - BELANJA PEGAWAI - SEMULA': val_wa_peg_semula,
+                'WA - BELANJA PEGAWAI - MENJADI': val_wa_peg_menjadi,
+                'WA - SELISIH BELANJA PEGAWAI': val_wa_peg_selisih,
+                'WA - BELANJA BARANG OPERASIONAL - SEMULA': val_wa_ops_semula,
+                'WA - BELANJA BARANG OPERASIONAL - MENJADI': val_wa_ops_menjadi,
+                'WA - SELISIH BELANJA BARANG OPERASIONAL': val_wa_ops_selisih,
+                'WA - BELANJA BARANG NONOPERASIONAL - SEMULA': val_wa_nops_semula,
+                'WA - BELANJA BARANG NONOPERASIONAL - MENJADI': val_wa_nops_menjadi,
+                'WA - SELISIH BELANJA BARANG NONOPERASIONAL': val_wa_nops_selisih,
+                'WA - BELANJA MODAL - SEMULA': val_wa_mod_semula,
+                'WA - BELANJA MODAL - MENJADI': val_wa_mod_menjadi,
+                'WA - SELISIH BELANJA MODAL': val_wa_mod_selisih,
                 'WA - TOTAL DUKUNGAN MANAJEMEN - SEMULA': val_wa_tot_semula,
                 'WA - TOTAL DUKUNGAN MANAJEMEN - MENJADI': val_wa_tot_menjadi,
                 'WA - SELISIH TOTAL DUKUNGAN MANAJEMEN': val_wa_tot_selisih,
                 'TOTAL DIPA - SEMULA': val_tot_semula,
                 'TOTAL DIPA - MENJADI': val_tot_menjadi,
                 'TOTAL DIPA - SELISIH': val_tot_selisih,
-
             }
             matriks_data.append(row)
             
@@ -2322,7 +2724,7 @@ with tab_reporting:
         with col1:
             st.download_button(
                 label="📥 Download Matriks Report (Excel)",
-                data=convert_df_to_excel(matriks_df),
+                data=convert_df_to_excel(matriks_df, 'Matriks'),
                 file_name='matriks_semula_menjadi.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
@@ -2334,6 +2736,15 @@ with tab_reporting:
                 file_name='raw_adk_joined.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
+
+with tab_cek:
+    st.header("Cek Blokir")
+    if 'main_df' not in locals() or main_df.empty:
+        st.warning("Please run ETL Process and wait for data to load.")
+    elif 'rphblokir' not in main_df.columns:
+        st.error("Kolom rphblokir tidak ditemukan pada data ADK aktif.")
+    else:
+        render_cek_blokir(main_df)
 
 # --- Sticky footer (copyleft notice) ---
 
