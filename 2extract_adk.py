@@ -573,6 +573,13 @@ def convert_df_to_excel_meta(df, meta, sheet_name='Data'):
 # =====================================================================
 # Cek Blokir
 # =====================================================================
+# RO SBK (format kdgiat.kdoutput.kdsoutput)
+SBK_RO_LIST = [
+    '6212.BMB.001', '6212.FAC.001', '6212.FAH.001', '6212.FAL.004', '6213.FAC.001', '6213.FAE.009',
+    '6213.FAL.003', '6214.FAL.002', '6215.FAH.003', '4715.CAN.001', '4715.EBA.001', '4715.EBA.002',
+    '4715.EBA.994', '4715.EBB.001', '4715.EBB.002', '4715.EBB.004', '4715.EBD.003', '4718.BMB.001',
+    '4718.BMB.002', '4719.EBA.004', '4719.EBA.994', '4719.EBC.001',
+]
 BLOKIR_AKUN_PREFIX = '524'
 BLOKIR_AKUN_EXACT = ['525115', '533111', '523111', '533121']
 
@@ -637,13 +644,13 @@ def parse_blokir_kontrol(uploaded):
     except Exception as e:
         return None, [f"Gagal membaca Excel: {e}"]
     canon = {'kdsatker': 'kdsatker', 'fullro': 'fullRO', 'akun': 'akun',
-             'rphblokirkontrol': 'rphblokirKontrol', 'kdib': 'kdib', 'kdskmpnen': 'kdskmpnen'}
+             'rphblokirkontrol': 'rphblokirKontrol'}
     raw = raw.rename(columns={c: canon.get(re.sub(r'[^a-z0-9]', '', str(c).lower()), c) for c in raw.columns})
     required = ['kdsatker', 'fullRO', 'akun', 'rphblokirKontrol']
     missing = [c for c in required if c not in raw.columns]
     if missing:
         return None, [f"Kolom wajib tidak ada: {', '.join(missing)}"]
-    keep = required + [c for c in ('kdib', 'kdskmpnen') if c in raw.columns]
+    keep = required
     df = raw[keep].dropna(how='all').copy()
     errors = []
     key_cols = [c for c in keep if c != 'rphblokirKontrol']
@@ -748,9 +755,13 @@ def render_cek_blokir(main_df):
     else:
         sel_pic = []
         r2[2].multiselect("PIC", [], disabled=True, key='cb_pic', help="Kolom 'pic' tidak tersedia.")
-    sel_jenis = st.multiselect("Jenis Akun", ["Akun Blokir", "Akun Non Blokir"], key='cb_jenis')
+    kdb_map = (cb[cb['kdblokir'] != ''].drop_duplicates('kdblokir').set_index('kdblokir')['uraiblokir'])
+    kdb_opts = sorted(cb['kdblokir'].unique().tolist())
+    sel_kdb = st.multiselect(
+        "Kode Blokir (kdblokir)", kdb_opts, key='cb_kdb',
+        format_func=lambda k: f"{k} - {kdb_map.get(k, '')}" if k else "(kosong / tanpa kdblokir)")
 
-    def _flt(d, with_jenis=True):
+    def _flt(d, with_kdb=True, ctrl_mode=False):
         if sel_beban and 'kdbeban' in d.columns:
             d = d[d['kdbeban'].isin(sel_beban)]
         if sel_prog and 'kdprogram' in d.columns:
@@ -763,16 +774,21 @@ def render_cek_blokir(main_df):
             d = d[d['kdakun'].isin(sel_akun)]
         if sel_pic and 'pic' in d.columns:
             d = d[pic_filter_mask(d['pic'], sel_pic)]
-        if with_jenis and len(sel_jenis) == 1 and 'akun_blokir' in d.columns:
-            d = d[d['akun_blokir'] == (sel_jenis[0] == "Akun Blokir")]
+        if with_kdb and sel_kdb and 'kdblokir' in d.columns:
+            if ctrl_mode:
+                wanted = set(sel_kdb)
+                d = d[d['kdblokir'].map(
+                    lambda s: bool(({x.strip() for x in s.split(',')} if s else {''}) & wanted))]
+            else:
+                d = d[d['kdblokir'].isin(sel_kdb)]
         return d
 
-    cb_noj = _flt(cb, with_jenis=False)
+    cb_nokdb = _flt(cb, with_kdb=False)
     cb_f = _flt(cb)
 
     filter_parts = []
     for lbl, vals in (("kdbeban", sel_beban), ("kdprogram", sel_prog), ("RO", sel_ro), ("Satker", sel_sat),
-                      ("Akun", sel_akun), ("PIC", sel_pic), ("Jenis Akun", sel_jenis)):
+                      ("Akun", sel_akun), ("PIC", sel_pic), ("kdblokir", sel_kdb)):
         if vals:
             filter_parts.append(f"{lbl}: {', '.join(map(str, vals))}")
     filter_text = "; ".join(filter_parts) if filter_parts else "Tanpa filter"
@@ -803,7 +819,7 @@ def render_cek_blokir(main_df):
         st.dataframe(by_akun.rename(columns={'kdakun': 'Kode Akun'}).style.format({'Blokir': '{:,.0f}'}),
                      hide_index=True, use_container_width=True)
 
-    out_akun = cb_noj[(cb_noj['rphblokir'] != 0) & (~cb_noj['akun_blokir'])]
+    out_akun = cb_f[(cb_f['rphblokir'] != 0) & (~cb_f['akun_blokir'])]
     if not out_akun.empty:
         st.warning(
             f"⚠️ Terdapat blokir (rphblokir) pada akun di luar daftar akun blokir: "
@@ -817,6 +833,34 @@ def render_cek_blokir(main_df):
     else:
         st.success("Tidak ada blokir di luar daftar akun blokir.")
 
+    # ---------------- Monitoring SBK ----------------
+    st.markdown("**Monitoring SBK: Satker dan RO SBK tanpa Nilai Blokir**")
+    sbk = cb_nokdb.copy()
+    sbk['RO SBK'] = sbk['kdgiat'] + '.' + sbk['kdoutput'] + '.' + sbk['kdsoutput']
+    sbk = sbk[sbk['RO SBK'].isin(SBK_RO_LIST)]
+    if sbk.empty:
+        st.info("Tidak ada RO SBK pada data terfilter.")
+    else:
+        sbk_g = (sbk.groupby(['kdsatker', 'Full RO', 'RO SBK'], as_index=False)
+                 .agg(Pagu=('jumlah', 'sum'), Blokir=('rphblokir', 'sum')))
+        sbk_none = sbk_g[sbk_g['Blokir'] == 0].copy()
+        sbk_none['Nama Satker'] = sbk_none['kdsatker'].map(nm_map).fillna('')
+        k1, k2 = st.columns(2)
+        k1.metric("Kombinasi Satker-RO SBK", f"{len(sbk_g):,}".replace(",", "."))
+        k2.metric("Tanpa Nilai Blokir", f"{len(sbk_none):,}".replace(",", "."))
+        if sbk_none.empty:
+            st.success("Seluruh RO SBK pada data terfilter memiliki nilai blokir.")
+        else:
+            st.dataframe(
+                sbk_none.rename(columns={'kdsatker': 'Kode Satker'})
+                [['Kode Satker', 'Nama Satker', 'Full RO', 'RO SBK', 'Pagu']]
+                .sort_values(['Kode Satker', 'Full RO']).style.format({'Pagu': '{:,.0f}'}),
+                hide_index=True, use_container_width=True)
+        absent = [r for r in SBK_RO_LIST if r not in set(sbk['RO SBK'])]
+        if absent:
+            st.caption("RO SBK pada referensi yang tidak ditemukan di data terfilter: " + ", ".join(absent))
+    st.caption("Monitoring SBK mengikuti semua filter kecuali kdblokir.")
+
     # ---------------- Upload kontrol ----------------
     st.subheader("Upload Kontrol Blokir")
     ctrl_df, ctrl_meta = load_blokir_kontrol()
@@ -826,7 +870,7 @@ def render_cek_blokir(main_df):
     else:
         st.info("Belum ada Kontrol Blokir tersimpan.")
     up = st.file_uploader(
-        "Excel kontrol (kolom wajib: kdsatker, fullRO, akun, rphblokirKontrol; opsional: kdib, kdskmpnen)",
+        "Excel kontrol (kolom: kdsatker, fullRO, akun, rphblokirKontrol)",
         type=['xlsx', 'xls'], key='cb_upload')
     if up is not None:
         parsed, errs = parse_blokir_kontrol(up)
@@ -849,12 +893,10 @@ def render_cek_blokir(main_df):
     if ctrl_df.empty:
         st.info("Simpan Kontrol Blokir terlebih dahulu untuk menampilkan hasil pengecekan.")
         return
-    opt_keys = [c for c in ('kdib', 'kdskmpnen') if c in ctrl_df.columns]
-    key_cols = ['kdsatker', 'fullRO'] + opt_keys + ['akun']
-    if not opt_keys:
-        st.caption("File kontrol tidak memuat kdib/kdskmpnen, sehingga perbandingan dilakukan per kdsatker + fullRO + akun.")
-    st.caption("Filter kdbeban hanya memengaruhi sisi ADK (file kontrol tidak memuat kdbeban). "
-               "Kolom SBK akan terisi setelah referensi RO SBK tersedia.")
+    key_cols = ['kdsatker', 'fullRO', 'akun']
+    st.caption("Perbandingan per kdsatker + fullRO + akun. Filter kdbeban hanya memengaruhi sisi ADK "
+               "(file kontrol tidak memuat kdbeban). Pada filter kdblokir, baris kontrol dipetakan lewat kdblokir di ADK; "
+               "baris kontrol yang tidak ada di ADK disembunyikan saat filter kdblokir aktif.")
 
     adk = cb_f.rename(columns={'kdakun': 'akun'})
     adk_agg = adk.groupby(key_cols, as_index=False).agg(jumlah=('jumlah', 'sum'), rphblokir=('rphblokir', 'sum'))
@@ -864,14 +906,20 @@ def render_cek_blokir(main_df):
         kdblokir=('kdblokir', lambda s: ', '.join(sorted({x for x in s if x}))),
         uraiblokir=('uraiblokir', lambda s: ', '.join(sorted({x for x in s if x}))))
 
-    ctrl = ctrl_df.copy()
+    ctrl = ctrl_df[key_cols + ['rphblokirKontrol']].copy()
+    kb_src = cb.rename(columns={'kdakun': 'akun'})[key_cols + ['kdblokir', 'uraiblokir']].drop_duplicates()
+    kb_src = kb_src[kb_src['kdblokir'] != '']
+    kb_all = kb_src.groupby(key_cols, as_index=False).agg(
+        kdblokir=('kdblokir', lambda s: ', '.join(sorted(set(s)))))
+    ctrl = ctrl.merge(kb_all, on=key_cols, how='left')
+    ctrl['kdblokir'] = ctrl['kdblokir'].fillna('')
     ctrl['kdakun'] = ctrl['akun']
     ctrl['kdprogram'] = ctrl['fullRO'].str.split('.').str[0]
     ctrl['Full RO'] = ctrl['fullRO'].str.rsplit('.', n=1).str[0]
     ctrl['akun_blokir'] = is_akun_blokir(ctrl['kdakun'])
     if pic_map is not None:
         ctrl['pic'] = ctrl['kdsatker'].map(pic_map)
-    ctrl = _flt(ctrl)
+    ctrl = _flt(ctrl, ctrl_mode=True)
     ctrl_agg = ctrl[key_cols + ['rphblokirKontrol']]
 
     res = compute_cek_blokir(adk_agg, ctrl_agg, key_cols, nm_map, kb_map)
@@ -883,11 +931,12 @@ def render_cek_blokir(main_df):
         res = res[(res['rphblokir'] != 0) | (res['rphblokirKontrol'] != 0)]
     if only_diff:
         res = res[res['selisih'].round() != 0]
-    res = res.sort_values(['kdsatker', 'fullRO'] + opt_keys + ['akun'])
-    res['SBK'] = ''
+    res = res.sort_values(key_cols)
+    res['SBK'] = res['fullRO'].map(
+        lambda r: 'Ya' if '.'.join(r.split('.')[1:4]) in SBK_RO_LIST else 'Tidak')
 
-    disp_cols = (['kdsatker', 'nmsatker', 'fullRO'] + [c for c in ('kdskmpnen', 'kdib') if c in opt_keys] +
-                 ['SBK', 'akun', 'kdblokir', 'uraiblokir', 'jumlah', 'rphblokir', 'rphblokirKontrol', 'selisih', 'Status'])
+    disp_cols = ['kdsatker', 'nmsatker', 'fullRO', 'SBK', 'akun', 'kdblokir', 'uraiblokir',
+                 'jumlah', 'rphblokir', 'rphblokirKontrol', 'selisih', 'Status']
     out = res[disp_cols].reset_index(drop=True)
 
     s1, s2, s3, s4, s5 = st.columns(5)
