@@ -22,6 +22,7 @@ import re
 import patoolib
 import tempfile
 import csv
+import hashlib
 import json
 import io
 import base64
@@ -251,97 +252,158 @@ def process_uploaded_rar(uploaded_file, temp_dir, selected_delimiter):
             return {}
         st.info(f"  - Successfully extracted outer archive.")
 
-        # Find inner .sXX file
-        inner_sxx_file = None
-        for item in os.listdir(outer_extraction_dir):
-            if re.match(r'.*\.s\d{2}$', item):
-                inner_sxx_file = os.path.join(outer_extraction_dir, item)
-                break
-        if not inner_sxx_file:
+        # Find ALL inner .sXX files (recursively). Satu .sXX = satu satker, dan
+        # satu RAR bisa berisi ratusan .sXX; semuanya diproses lalu digabung.
+        sxx_files = []
+        for root, _dirs, files in os.walk(outer_extraction_dir):
+            for item in files:
+                if re.match(r'.*\.s\d{2}$', item, flags=re.IGNORECASE):
+                    sxx_files.append(os.path.join(root, item))
+        sxx_files.sort()
+        if not sxx_files:
             st.warning(f"  - No inner `.sXX` file found. Skipping.")
             return {}
+        st.info(f"  - Ditemukan {len(sxx_files)} berkas `.sXX`.")
 
-        # Extract inner archive
-        inner_extraction_dir = tempfile.mkdtemp(dir=temp_dir)
-        if not _extract_with_fallback(inner_sxx_file, inner_extraction_dir, debug=True):
-            st.error("  - Could not extract inner `.sXX` archive (unrecognized format).")
-            return {}
-        st.info(f"  - Successfully extracted inner archive.")
-
-        # --- Recursively peel any further nested archives ---
-        # ADK exports sometimes wrap the actual D_*/M_* CSVs inside one more
-        # archive layer with no recognizable extension (e.g. 'd01_...').
         def _is_target_csv(filename):
             low = filename.lower()
             return any(low.startswith(p) for p in TARGET_FILES.keys()) and low.endswith('.csv')
 
-        max_depth = 4
-        for depth in range(max_depth):
-            all_files = []
-            for root, _dirs, files in os.walk(inner_extraction_dir):
-                for fname in files:
-                    all_files.append(os.path.join(root, fname))
+        def _list_files(folder):
+            return [os.path.join(r, f) for r, _d, fs in os.walk(folder) for f in fs]
 
-            if any(_is_target_csv(os.path.basename(fp)) for fp in all_files):
-                break
-
-            extracted_something = False
-            for fp in all_files:
-                if _is_target_csv(os.path.basename(fp)):
-                    continue
-                nested_out = tempfile.mkdtemp(dir=inner_extraction_dir)
-                if _extract_with_fallback(fp, nested_out):
-                    extracted_something = True
-
-            if not extracted_something:
-                break  # nothing more to peel
-
-        # Final inventory across the whole tree (all nesting levels)
-        all_files_final = []
-        for root, _dirs, files in os.walk(inner_extraction_dir):
-            for fname in files:
-                all_files_final.append(os.path.join(root, fname))
-
-        st.caption(f"  - Files found after full extraction: {[os.path.basename(f) for f in all_files_final]}")
-
-        # Process each expected data file
-        for prefix in TARGET_FILES.keys():
-            for file_path in all_files_final:
-                extracted_file = os.path.basename(file_path)
-                if extracted_file.lower().startswith(prefix.lower()) and extracted_file.lower().endswith('.csv'):
-                    if os.path.getsize(file_path) == 0:
-                        st.warning(f"    - Found empty file: `{extracted_file}`. Skipping.")
-                        continue
-
-                    try:
-                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            raw_content = f.read()
-
-                        # --- Optional: detect if user might have chosen wrong delimiter ---
-                        sample = raw_content[:1000]
-                        likely_delim = max(['|', ';', ','], key=lambda d: sample.count(d))
-                        if likely_delim != selected_delimiter:
-                            st.warning(f"    ⚠️ File `{extracted_file}` seems to use '{likely_delim}' delimiter (not '{selected_delimiter}'). Parsing anyway...")
-
-                        # --- FIXED LOGIC: Parse always using '|' because ADK data is pipe-separated ---
-                        df = pd.read_csv(
-                            io.StringIO(raw_content),
-                            delimiter='|',        # always correct for ADK files
-                            header=None,
-                            engine='python',
-                            quoting=csv.QUOTE_NONE,
-                            on_bad_lines='skip'
-                        )
-
-                        # Clean caret characters AFTER parsing
-                        df = df.apply(lambda col: col.map(lambda x: str(x).replace('^', '') if isinstance(x, str) else x))
-
-                        dataframes[prefix] = df
-                        st.success(f"    - Successfully loaded `{extracted_file}` with {df.shape[1]} columns.")
-
-                    except Exception as e:
-                        st.error(f"    - Error parsing `{extracted_file}`. Check delimiter. Error: {e}")
+        def _extract_sxx_tree(sxx_path, work_dir):
+            """Ekstrak satu .sXX lalu kupas lapisan arsip bersarang (maks. 4 tingkat,
+            ADK kadang membungkus CSV dalam satu arsip lagi tanpa ekstensi dikenali).
+            Mengembalikan daftar path file akhir, atau None bila gagal diekstrak."""
+            if not _extract_with_fallback(sxx_path, work_dir):
+                return None
+            for _depth in range(4):
+                all_files = _list_files(work_dir)
+                if any(_is_target_csv(os.path.basename(fp)) for fp in all_files):
                     break
+                extracted_something = False
+                for fp in all_files:
+                    if _is_target_csv(os.path.basename(fp)):
+                        continue
+                    nested_out = tempfile.mkdtemp(dir=work_dir)
+                    if _extract_with_fallback(fp, nested_out):
+                        extracted_something = True
+                if not extracted_something:
+                    break
+            return _list_files(work_dir)
+
+        try:
+            satker_idx = HEADERS_MAP['d_item'].index('kdsatker')
+        except Exception:
+            satker_idx = None
+
+        collected = {prefix: [] for prefix in TARGET_FILES.keys()}
+        summary_rows = []
+        delim_warn = {}      # prefix -> jumlah berkas dengan pemisah tak sesuai pilihan
+        satker_files = {}    # kdsatker -> daftar .sXX tempat satker itu muncul
+        sxx_progress = st.progress(0, text="Memproses berkas .sXX ...")
+
+        for idx, sxx_path in enumerate(sxx_files):
+            sxx_name = os.path.basename(sxx_path)
+            work_dir = tempfile.mkdtemp(dir=temp_dir)
+            row = {'File .sXX': sxx_name, 'Status': 'OK', 'Berkas CSV': 0, 'Baris d_item': 0, 'Catatan': ''}
+            try:
+                final_files = _extract_sxx_tree(sxx_path, work_dir)
+                if final_files is None:
+                    row['Status'] = 'Gagal ekstrak'
+                else:
+                    found_prefixes = set()
+                    for prefix in TARGET_FILES.keys():
+                        seen_hashes = set()
+                        matches = sorted(
+                            fp for fp in final_files
+                            if os.path.basename(fp).lower().startswith(prefix.lower())
+                            and os.path.basename(fp).lower().endswith('.csv')
+                        )
+                        for file_path in matches:
+                            if os.path.getsize(file_path) == 0:
+                                continue
+                            try:
+                                with open(file_path, 'rb') as fb:
+                                    raw_bytes = fb.read()
+                                digest = hashlib.md5(raw_bytes).hexdigest()
+                                if digest in seen_hashes:
+                                    continue  # salinan identik hasil ekstraksi ganda
+                                seen_hashes.add(digest)
+                                raw_content = raw_bytes.decode('utf-8', errors='ignore')
+
+                                sample = raw_content[:1000]
+                                likely_delim = max(['|', ';', ','], key=lambda d: sample.count(d))
+                                if likely_delim != selected_delimiter:
+                                    delim_warn[prefix] = delim_warn.get(prefix, 0) + 1
+
+                                # ADK data is pipe-separated: always parse with '|'
+                                df = pd.read_csv(
+                                    io.StringIO(raw_content),
+                                    delimiter='|',
+                                    header=None,
+                                    engine='python',
+                                    quoting=csv.QUOTE_NONE,
+                                    on_bad_lines='skip'
+                                )
+                                # Clean caret characters AFTER parsing
+                                df = df.apply(lambda col: col.map(lambda x: str(x).replace('^', '') if isinstance(x, str) else x))
+
+                                collected[prefix].append(df)
+                                found_prefixes.add(prefix)
+                                row['Berkas CSV'] += 1
+                                if prefix == 'd_item':
+                                    row['Baris d_item'] += len(df)
+                                    if satker_idx is not None and df.shape[1] > satker_idx:
+                                        for sk in df.iloc[:, satker_idx].astype(str).str.strip().unique():
+                                            satker_files.setdefault(sk, []).append(sxx_name)
+                            except Exception as e:
+                                row['Status'] = 'Error parsing'
+                                row['Catatan'] = f"{os.path.basename(file_path)}: {e}"
+                    if not found_prefixes and row['Status'] == 'OK':
+                        row['Status'] = 'Tidak ada CSV'
+                    elif row['Status'] == 'OK':
+                        missing = [p for p in TARGET_FILES.keys() if p not in found_prefixes]
+                        if missing:
+                            row['Catatan'] = 'Tidak ada: ' + ', '.join(missing)
+            except Exception as e:
+                row['Status'] = 'Error'
+                row['Catatan'] = str(e)
+            finally:
+                shutil.rmtree(work_dir, ignore_errors=True)
+            summary_rows.append(row)
+            sxx_progress.progress((idx + 1) / len(sxx_files), text=f"Memproses berkas .sXX: {idx + 1} / {len(sxx_files)}")
+        sxx_progress.empty()
+
+        # Gabungkan hasil semua .sXX per jenis berkas
+        for prefix, dfs in collected.items():
+            if not dfs:
+                continue
+            widths = sorted({d.shape[1] for d in dfs})
+            if len(widths) > 1:
+                st.warning(f"  - Jumlah kolom `{prefix}` berbeda antar berkas .sXX ({widths}); posisi header mungkin bergeser.")
+            dataframes[prefix] = pd.concat(dfs, ignore_index=True)
+
+        summary_df = pd.DataFrame(summary_rows)
+        n_ok = int((summary_df['Status'] == 'OK').sum()) if not summary_df.empty else 0
+        st.success(f"  - {n_ok} dari {len(sxx_files)} berkas `.sXX` berhasil diproses; {len(satker_files)} satker unik pada d_item.")
+        bad_df = summary_df[summary_df['Status'] != 'OK'] if not summary_df.empty else summary_df
+        if not bad_df.empty:
+            st.warning(f"  - {len(bad_df)} berkas `.sXX` bermasalah (lihat tabel rincian di bawah).")
+        for prefix, cnt in delim_warn.items():
+            st.warning(f"  - {cnt} berkas `{prefix}` tampak memakai pemisah selain '{selected_delimiter}' (parsing tetap memakai '|').")
+        dup_satker = {k: v for k, v in satker_files.items() if len(v) > 1}
+        if dup_satker:
+            contoh = ", ".join(list(dup_satker.keys())[:5])
+            st.warning(
+                f"  - {len(dup_satker)} satker muncul di lebih dari satu berkas `.sXX` (mis. {contoh}). "
+                "Data digabung apa adanya sehingga pagu satker tersebut bisa terhitung ganda."
+            )
+        loaded_caption = ", ".join(f"{p}: {len(d):,} baris" for p, d in dataframes.items())
+        st.caption(f"  - Total setelah digabung: {loaded_caption}")
+        with st.expander(f"Rincian per berkas .sXX ({len(sxx_files)})", expanded=not bad_df.empty):
+            st.dataframe(summary_df, hide_index=True, use_container_width=True)
 
     except Exception as e:
         st.error(f"An error occurred during processing: {e}")
@@ -1511,7 +1573,7 @@ with tab_dashboard:
 
         BLU_SATKER_KEYWORDS = [
             'BADAN PENGELOLA DANA LINGKUNGAN HIDUP (BPDLH)',
-            'PUSAT INVESTASI PEMERINTAH (PIP)',
+            'PUSAT INVESTASI PEMERINTAH',
             'BADAN PENGELOLA DANA PERKEBUNAN (BPDP)',
         ]
 
@@ -2110,8 +2172,8 @@ with tab_reporting:
         semula_df = assign_new_cols(semula_df)
 
 
-        d_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'rphblokir', 'ket','ket2']
-        m_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'rphblokir']
+        d_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah', 'ket','ket2']
+        m_cols = ['source', 'thang', 'kdjendok', 'kdsatker', 'nmsatker', 'satdirbag', 'kddept', 'kdunit', 'kdlokasi', 'kdkabkota', 'kddekon', 'kdprogram', 'kdgiat', 'kdoutput', 'kdsoutput', 'ursoutput', 'kdkmpnen', 'kdskmpnen', 'urskmpnen', 'ops/nonops', 'kdakun', 'kdblokir', 'uraiblokir', 'header1', 'header2', 'kdheader', 'noitem', 'nmitem', 'vol1', 'sat1', 'vol2', 'sat2', 'vol3', 'sat3', 'vol4', 'sat4', 'volkeg', 'satkeg', 'hargasat', 'volsout', 'jumlah']
 
         # kdblokir/uraiblokir berasal dari d_akun/m_akun (kdblokir d_item sudah
         # di-drop saat upload). Jika kolom item masih ada, kolom akun bersuffix _akun.
@@ -2198,8 +2260,8 @@ with tab_reporting:
             val_wa_nops_selisih = val_wa_nops_menjadi - val_wa_nops_semula
             
             # WA Modal
-            semula_wa_mod = semula_s[(semula_s['kdprogram'] == 'WA')  & (semula_s['kdakun'].astype(str).str.startswith('53'))]
-            menjadi_wa_mod = menjadi_s[(menjadi_s['kdprogram'] == 'WA')  & (menjadi_s['kdakun'].astype(str).str.startswith('53'))]
+            semula_wa_mod = semula_s[(semula_s['kdprogram'] == 'WA') & (semula_s['kdkmpnen'] == '100') & (semula_s['kdakun'].astype(str).str.startswith('53'))]
+            menjadi_wa_mod = menjadi_s[(menjadi_s['kdprogram'] == 'WA') & (menjadi_s['kdkmpnen'] == '100') & (menjadi_s['kdakun'].astype(str).str.startswith('53'))]
             val_wa_mod_semula = safe_num(semula_wa_mod)
             val_wa_mod_menjadi = safe_num(menjadi_wa_mod)
             val_wa_mod_selisih = val_wa_mod_menjadi - val_wa_mod_semula
@@ -2238,6 +2300,7 @@ with tab_reporting:
                 'TOTAL DIPA - SEMULA': val_tot_semula,
                 'TOTAL DIPA - MENJADI': val_tot_menjadi,
                 'TOTAL DIPA - SELISIH': val_tot_selisih,
+
             }
             matriks_data.append(row)
             
